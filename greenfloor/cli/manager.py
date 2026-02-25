@@ -237,6 +237,8 @@ def _wait_for_mempool_then_confirmation(
     seen_pending = False
     next_heartbeat = 5
     sleep_seconds = 2.0
+    next_mempool_warning = mempool_warning_seconds
+    next_confirmation_warning = confirmation_warning_seconds
     while True:
         coins = wallet.list_coins(include_pending=True)
         pending = [
@@ -275,22 +277,22 @@ def _wait_for_mempool_then_confirmation(
         if elapsed >= next_heartbeat:
             print(".", end="", file=sys.stderr, flush=True)
             next_heartbeat += 5
-        if not seen_pending and elapsed >= mempool_warning_seconds:
+        if not seen_pending and elapsed >= next_mempool_warning:
             events.append(
                 {
                     "event": "mempool_wait_warning",
                     "elapsed_seconds": str(elapsed),
                 }
             )
-            mempool_warning_seconds += mempool_warning_seconds
-        if seen_pending and elapsed >= confirmation_warning_seconds:
+            next_mempool_warning += mempool_warning_seconds
+        if seen_pending and elapsed >= next_confirmation_warning:
             events.append(
                 {
                     "event": "confirmation_wait_warning",
                     "elapsed_seconds": str(elapsed),
                 }
             )
-            confirmation_warning_seconds += confirmation_warning_seconds
+            next_confirmation_warning += confirmation_warning_seconds
         time.sleep(sleep_seconds)
         sleep_seconds = min(20.0, sleep_seconds * 1.5)
 
@@ -362,6 +364,37 @@ def _as_wait_events(value: object) -> list[dict[str, str]]:
             event = {str(k): str(v) for k, v in row.items()}
             items.append(event)
     return items
+
+
+def _resolve_coin_global_ids(
+    wallet_coins: list[dict], raw_coin_ids: list[str]
+) -> tuple[list[str], list[str]]:
+    """Map operator hex coin names (or Coin_* global IDs) to Cloud Wallet global IDs.
+
+    Returns (resolved_ids, unresolved_ids).  Operators usually copy hex coin names
+    from ``coins-list`` output; Cloud Wallet mutations require the ``Coin_*`` GraphQL
+    global-ID form.  Direct ``Coin_*`` IDs are passed through unchanged for power users.
+    """
+    mapping: dict[str, str] = {}
+    for coin in wallet_coins:
+        global_id = str(coin.get("id", "")).strip()
+        name = str(coin.get("name", "")).strip()
+        if global_id:
+            mapping[global_id] = global_id
+        if name and global_id:
+            mapping[name] = global_id
+    resolved: list[str] = []
+    unresolved: list[str] = []
+    for raw in raw_coin_ids:
+        token = str(raw).strip()
+        mapped = mapping.get(token)
+        if mapped:
+            resolved.append(mapped)
+        elif token.startswith("Coin_"):
+            resolved.append(token)
+        else:
+            unresolved.append(token)
+    return resolved, unresolved
 
 
 # ---------------------------------------------------------------------------
@@ -974,7 +1007,7 @@ def _coins_list(
     for coin in coins:
         coin_state = str(coin.get("state", "")).strip().upper()
         pending = coin_state in {"PENDING", "MEMPOOL"}
-        spendable = coin_state not in {"SPENT"} and not pending
+        spendable = _is_spendable_coin(coin)
         asset_raw = coin.get("asset")
         asset_id = "xch"
         if isinstance(asset_raw, dict):
@@ -1090,29 +1123,7 @@ def _coin_split(
     for iteration in range(1, max_iterations + 1):
         wallet_coins = wallet.list_coins(include_pending=True)
         existing_coin_ids = {str(c.get("id", "")).strip() for c in wallet_coins}
-        # Operators usually copy coin hex names from `coins-list`; Cloud Wallet mutations
-        # require GraphQL coin global IDs, so resolve name -> id before mutation.
-        coin_identifier_to_global_id: dict[str, str] = {}
-        for coin in wallet_coins:
-            global_id = str(coin.get("id", "")).strip()
-            name = str(coin.get("name", "")).strip()
-            if global_id:
-                coin_identifier_to_global_id[global_id] = global_id
-            if name and global_id:
-                coin_identifier_to_global_id[name] = global_id
-        resolved_coin_ids: list[str] = []
-        unresolved_coin_ids = []
-        for raw_coin_id in coin_ids:
-            token = str(raw_coin_id).strip()
-            mapped = coin_identifier_to_global_id.get(token)
-            if mapped:
-                resolved_coin_ids.append(mapped)
-                continue
-            # Allow direct GraphQL IDs for power users.
-            if token.startswith("Coin_"):
-                resolved_coin_ids.append(token)
-                continue
-            unresolved_coin_ids.append(token)
+        resolved_coin_ids, unresolved_coin_ids = _resolve_coin_global_ids(wallet_coins, coin_ids)
         if unresolved_coin_ids:
             break
 
@@ -1316,33 +1327,15 @@ def _coin_combine(
         existing_coin_ids = {str(c.get("id", "")).strip() for c in wallet_coins}
         resolved_input_coin_ids: list[str] | None = None
         if coin_ids:
-            coin_identifier_to_global_id: dict[str, str] = {}
-            for coin in wallet_coins:
-                global_id = str(coin.get("id", "")).strip()
-                name = str(coin.get("name", "")).strip()
-                if global_id:
-                    coin_identifier_to_global_id[global_id] = global_id
-                if name and global_id:
-                    coin_identifier_to_global_id[name] = global_id
-            resolved_coin_ids: list[str] = []
-            unresolved_coin_ids = []
-            for raw_coin_id in coin_ids:
-                token = str(raw_coin_id).strip()
-                mapped = coin_identifier_to_global_id.get(token)
-                if mapped:
-                    resolved_coin_ids.append(mapped)
-                    continue
-                if token.startswith("Coin_"):
-                    resolved_coin_ids.append(token)
-                    continue
-                unresolved_coin_ids.append(token)
+            resolved_input_coin_ids, unresolved_coin_ids = _resolve_coin_global_ids(
+                wallet_coins, coin_ids
+            )
             if unresolved_coin_ids:
                 break
-            if number_of_coins != len(resolved_coin_ids):
+            if number_of_coins != len(resolved_input_coin_ids):
                 raise ValueError(
                     "when --coin-id is provided, --number-of-coins must match the number of --coin-id values"
                 )
-            resolved_input_coin_ids = resolved_coin_ids
 
         combine_result = wallet.combine_coins(
             number_of_coins=number_of_coins,

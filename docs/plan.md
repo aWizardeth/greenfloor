@@ -15,20 +15,25 @@
 
 ## Manager CLI Commands (V1 Core)
 
-Seven commands in scope. Do not add commands without explicit need tied to testnet proof.
+Ten commands in scope. Do not add commands without explicit need tied to mainnet proof.
 
 1. `bootstrap-home` — create `~/.greenfloor` runtime layout, seed config, initialize state DB.
 2. `config-validate` — validate program + markets config and key routing.
 3. `doctor` — readiness check (config, key routing, DB, env overrides).
 4. `keys-onboard` — interactive key selection and onboarding persistence.
-5. `build-and-post-offer` — build offer via `chia-wallet-sdk` and post to venue (Dexie or Splash).
+5. `build-and-post-offer` — build offer via Cloud Wallet or local `chia-wallet-sdk` and post to venue (Dexie or Splash).
 6. `offers-status` — compact view of current offer states and recent events.
 7. `offers-reconcile` — refresh offer states from venue API and flag orphaned/unknown.
+8. `coins-list` — list Vault coin inventory with spendability/lock state (Cloud Wallet).
+9. `coin-split` — split a Vault coin into target denominations; default waits through signature + mempool + 1-block confirmation.
+10. `coin-combine` — combine Vault coins into fewer coins; default waits through signature + mempool + 1-block confirmation.
 
-Operator output/coin-op behavior updates on current delivery path:
+Operator output/coin-op behavior notes:
 
 - Manager JSON responses are pretty-formatted by default; use global `--json` for compact single-line output.
-- `coin-combine` now supports repeatable `--coin-id` for deterministic exact-coin targeting (with `coins-list` hex-name to `Coin_*` resolution).
+- `coin-split` and `coin-combine` accept `--no-wait` for asynchronous mode, `--until-ready` (bounded by `--max-iterations`) for denomination-readiness loops, and repeatable `--coin-id` for exact-coin targeting.
+- `coin-split`/`coin-combine` accept `--size-base-units` to derive denomination parameters from the market ladder configuration automatically.
+- `coins-list` output hex coin names are accepted by `coin-split`/`coin-combine` `--coin-id` and resolved to Cloud Wallet `Coin_*` GraphQL IDs internally.
 
 ## Signing Architecture
 
@@ -111,6 +116,13 @@ These are the only priorities. Do not start new feature work until G1-G3 are com
   - Add a deterministic preflight check that validates fee lookup behavior against the configured/default Coinset endpoint before live coin-op submission.
   - Ensure failure output clearly distinguishes endpoint routing/configuration issues from temporary fee-advice unavailability.
   - Document operator debug steps for fee lookups (endpoint verification, override behavior, expected JSON failure contracts).
+
+## CI Notes
+
+- `tests/test_chia_wallet_sdk_simulator_harness.py` was deleted (2026-02-25): all six tests
+  ran `cargo test` on `chia-sdk-driver` Rust internals (CAT issuance, catalog, reward distributor)
+  and tested no GreenFloor code. SDK has its own CI. `test_greenfloor_native_integration.py`
+  covers the SDK surface GreenFloor actually uses.
 
 ## Deferred Backlog (Post-Testnet Proof)
 

@@ -166,6 +166,17 @@ def _write_markets_with_ladder(path: Path) -> None:
     )
 
 
+def _write_program_with_cloud_wallet(path: Path, *, provider: str = "dexie") -> None:
+    """Write a program.yaml with valid Cloud Wallet credentials populated."""
+    _write_program(path, provider=provider)
+    text = path.read_text(encoding="utf-8")
+    text = text.replace('  base_url: ""', '  base_url: "https://wallet.example.com"')
+    text = text.replace('  user_key_id: ""', '  user_key_id: "key-1"')
+    text = text.replace('  private_key_pem_path: ""', '  private_key_pem_path: "/tmp/key.pem"')
+    text = text.replace('  vault_id: ""', '  vault_id: "wallet-1"')
+    path.write_text(text, encoding="utf-8")
+
+
 def _write_markets_with_duplicate_pair(path: Path) -> None:
     path.write_text(
         "\n".join(
@@ -935,13 +946,7 @@ def test_verify_offer_text_for_dexie_returns_native_validation_error(monkeypatch
 
 def test_coins_list_returns_minimal_fields(monkeypatch, tmp_path: Path, capsys) -> None:
     program = tmp_path / "program.yaml"
-    _write_program(program)
-    text = program.read_text(encoding="utf-8")
-    text = text.replace('  base_url: ""', '  base_url: "https://wallet.example.com"')
-    text = text.replace('  user_key_id: ""', '  user_key_id: "key-1"')
-    text = text.replace('  private_key_pem_path: ""', '  private_key_pem_path: "/tmp/key.pem"')
-    text = text.replace('  vault_id: ""', '  vault_id: "wallet-1"')
-    program.write_text(text, encoding="utf-8")
+    _write_program_with_cloud_wallet(program)
 
     class _FakeWallet:
         vault_id = "wallet-1"
@@ -976,14 +981,8 @@ def test_coins_list_returns_minimal_fields(monkeypatch, tmp_path: Path, capsys) 
 def test_coin_split_no_wait_uses_advised_fee(monkeypatch, tmp_path: Path, capsys) -> None:
     program = tmp_path / "program.yaml"
     markets = tmp_path / "markets.yaml"
-    _write_program(program)
+    _write_program_with_cloud_wallet(program)
     _write_markets(markets)
-    text = program.read_text(encoding="utf-8")
-    text = text.replace('  base_url: ""', '  base_url: "https://wallet.example.com"')
-    text = text.replace('  user_key_id: ""', '  user_key_id: "key-1"')
-    text = text.replace('  private_key_pem_path: ""', '  private_key_pem_path: "/tmp/key.pem"')
-    text = text.replace('  vault_id: ""', '  vault_id: "wallet-1"')
-    program.write_text(text, encoding="utf-8")
 
     calls = {}
 
@@ -1031,14 +1030,8 @@ def test_coin_split_no_wait_uses_advised_fee(monkeypatch, tmp_path: Path, capsys
 def test_coin_combine_no_wait_uses_advised_fee(monkeypatch, tmp_path: Path, capsys) -> None:
     program = tmp_path / "program.yaml"
     markets = tmp_path / "markets.yaml"
-    _write_program(program)
+    _write_program_with_cloud_wallet(program)
     _write_markets(markets)
-    text = program.read_text(encoding="utf-8")
-    text = text.replace('  base_url: ""', '  base_url: "https://wallet.example.com"')
-    text = text.replace('  user_key_id: ""', '  user_key_id: "key-1"')
-    text = text.replace('  private_key_pem_path: ""', '  private_key_pem_path: "/tmp/key.pem"')
-    text = text.replace('  vault_id: ""', '  vault_id: "wallet-1"')
-    program.write_text(text, encoding="utf-8")
 
     calls = {}
 
@@ -1088,14 +1081,8 @@ def test_coin_split_returns_structured_error_when_fee_resolution_fails(
 ) -> None:
     program = tmp_path / "program.yaml"
     markets = tmp_path / "markets.yaml"
-    _write_program(program)
+    _write_program_with_cloud_wallet(program)
     _write_markets(markets)
-    text = program.read_text(encoding="utf-8")
-    text = text.replace('  base_url: ""', '  base_url: "https://wallet.example.com"')
-    text = text.replace('  user_key_id: ""', '  user_key_id: "key-1"')
-    text = text.replace('  private_key_pem_path: ""', '  private_key_pem_path: "/tmp/key.pem"')
-    text = text.replace('  vault_id: ""', '  vault_id: "wallet-1"')
-    program.write_text(text, encoding="utf-8")
 
     class _FakeWallet:
         vault_id = "wallet-1"
@@ -1136,14 +1123,8 @@ def test_coin_combine_returns_structured_error_when_fee_resolution_fails(
 ) -> None:
     program = tmp_path / "program.yaml"
     markets = tmp_path / "markets.yaml"
-    _write_program(program)
+    _write_program_with_cloud_wallet(program)
     _write_markets(markets)
-    text = program.read_text(encoding="utf-8")
-    text = text.replace('  base_url: ""', '  base_url: "https://wallet.example.com"')
-    text = text.replace('  user_key_id: ""', '  user_key_id: "key-1"')
-    text = text.replace('  private_key_pem_path: ""', '  private_key_pem_path: "/tmp/key.pem"')
-    text = text.replace('  vault_id: ""', '  vault_id: "wallet-1"')
-    program.write_text(text, encoding="utf-8")
 
     class _FakeWallet:
         vault_id = "wallet-1"
@@ -1184,14 +1165,8 @@ def test_coin_split_returns_structured_error_when_coin_id_not_found(
 ) -> None:
     program = tmp_path / "program.yaml"
     markets = tmp_path / "markets.yaml"
-    _write_program(program)
+    _write_program_with_cloud_wallet(program)
     _write_markets(markets)
-    text = program.read_text(encoding="utf-8")
-    text = text.replace('  base_url: ""', '  base_url: "https://wallet.example.com"')
-    text = text.replace('  user_key_id: ""', '  user_key_id: "key-1"')
-    text = text.replace('  private_key_pem_path: ""', '  private_key_pem_path: "/tmp/key.pem"')
-    text = text.replace('  vault_id: ""', '  vault_id: "wallet-1"')
-    program.write_text(text, encoding="utf-8")
 
     class _FakeWallet:
         vault_id = "wallet-1"
@@ -1232,14 +1207,8 @@ def test_coin_combine_with_coin_ids_resolves_to_global_ids(
 ) -> None:
     program = tmp_path / "program.yaml"
     markets = tmp_path / "markets.yaml"
-    _write_program(program)
+    _write_program_with_cloud_wallet(program)
     _write_markets(markets)
-    text = program.read_text(encoding="utf-8")
-    text = text.replace('  base_url: ""', '  base_url: "https://wallet.example.com"')
-    text = text.replace('  user_key_id: ""', '  user_key_id: "key-1"')
-    text = text.replace('  private_key_pem_path: ""', '  private_key_pem_path: "/tmp/key.pem"')
-    text = text.replace('  vault_id: ""', '  vault_id: "wallet-1"')
-    program.write_text(text, encoding="utf-8")
 
     calls = {}
 
@@ -1289,14 +1258,8 @@ def test_coin_combine_returns_structured_error_when_coin_id_not_found(
 ) -> None:
     program = tmp_path / "program.yaml"
     markets = tmp_path / "markets.yaml"
-    _write_program(program)
+    _write_program_with_cloud_wallet(program)
     _write_markets(markets)
-    text = program.read_text(encoding="utf-8")
-    text = text.replace('  base_url: ""', '  base_url: "https://wallet.example.com"')
-    text = text.replace('  user_key_id: ""', '  user_key_id: "key-1"')
-    text = text.replace('  private_key_pem_path: ""', '  private_key_pem_path: "/tmp/key.pem"')
-    text = text.replace('  vault_id: ""', '  vault_id: "wallet-1"')
-    program.write_text(text, encoding="utf-8")
 
     class _FakeWallet:
         vault_id = "wallet-1"
@@ -1337,14 +1300,8 @@ def test_coin_split_uses_market_ladder_target_when_size_is_provided(
 ) -> None:
     program = tmp_path / "program.yaml"
     markets = tmp_path / "markets.yaml"
-    _write_program(program, provider="splash")
+    _write_program_with_cloud_wallet(program, provider="splash")
     _write_markets_with_ladder(markets)
-    text = program.read_text(encoding="utf-8")
-    text = text.replace('  base_url: ""', '  base_url: "https://wallet.example.com"')
-    text = text.replace('  user_key_id: ""', '  user_key_id: "key-1"')
-    text = text.replace('  private_key_pem_path: ""', '  private_key_pem_path: "/tmp/key.pem"')
-    text = text.replace('  vault_id: ""', '  vault_id: "wallet-1"')
-    program.write_text(text, encoding="utf-8")
     calls = {}
 
     class _FakeWallet:
@@ -1393,14 +1350,8 @@ def test_coin_combine_uses_market_ladder_threshold_when_size_is_provided(
 ) -> None:
     program = tmp_path / "program.yaml"
     markets = tmp_path / "markets.yaml"
-    _write_program(program, provider="splash")
+    _write_program_with_cloud_wallet(program, provider="splash")
     _write_markets_with_ladder(markets)
-    text = program.read_text(encoding="utf-8")
-    text = text.replace('  base_url: ""', '  base_url: "https://wallet.example.com"')
-    text = text.replace('  user_key_id: ""', '  user_key_id: "key-1"')
-    text = text.replace('  private_key_pem_path: ""', '  private_key_pem_path: "/tmp/key.pem"')
-    text = text.replace('  vault_id: ""', '  vault_id: "wallet-1"')
-    program.write_text(text, encoding="utf-8")
     calls = {}
 
     class _FakeWallet:
@@ -1447,7 +1398,7 @@ def test_coin_combine_uses_market_ladder_threshold_when_size_is_provided(
 def test_coin_combine_ladder_threshold_uses_ceil(monkeypatch, tmp_path: Path, capsys) -> None:
     program = tmp_path / "program.yaml"
     markets = tmp_path / "markets.yaml"
-    _write_program(program, provider="dexie")
+    _write_program_with_cloud_wallet(program, provider="dexie")
     markets.write_text(
         "\n".join(
             [
@@ -1476,12 +1427,6 @@ def test_coin_combine_ladder_threshold_uses_ceil(monkeypatch, tmp_path: Path, ca
         ),
         encoding="utf-8",
     )
-    text = program.read_text(encoding="utf-8")
-    text = text.replace('  base_url: ""', '  base_url: "https://wallet.example.com"')
-    text = text.replace('  user_key_id: ""', '  user_key_id: "key-1"')
-    text = text.replace('  private_key_pem_path: ""', '  private_key_pem_path: "/tmp/key.pem"')
-    text = text.replace('  vault_id: ""', '  vault_id: "wallet-1"')
-    program.write_text(text, encoding="utf-8")
     calls = {}
 
     class _FakeWallet:
@@ -1526,14 +1471,8 @@ def test_coin_split_until_ready_ignores_unknown_states_and_string_asset(
 ) -> None:
     program = tmp_path / "program.yaml"
     markets = tmp_path / "markets.yaml"
-    _write_program(program, provider="dexie")
+    _write_program_with_cloud_wallet(program, provider="dexie")
     _write_markets_with_ladder(markets)
-    text = program.read_text(encoding="utf-8")
-    text = text.replace('  base_url: ""', '  base_url: "https://wallet.example.com"')
-    text = text.replace('  user_key_id: ""', '  user_key_id: "key-1"')
-    text = text.replace('  private_key_pem_path: ""', '  private_key_pem_path: "/tmp/key.pem"')
-    text = text.replace('  vault_id: ""', '  vault_id: "wallet-1"')
-    program.write_text(text, encoding="utf-8")
 
     class _FakeWallet:
         vault_id = "wallet-1"
@@ -1651,14 +1590,8 @@ def test_coin_split_until_ready_disallows_no_wait(tmp_path: Path) -> None:
 def test_coin_split_until_ready_reports_not_ready(monkeypatch, tmp_path: Path, capsys) -> None:
     program = tmp_path / "program.yaml"
     markets = tmp_path / "markets.yaml"
-    _write_program(program, provider="dexie")
+    _write_program_with_cloud_wallet(program, provider="dexie")
     _write_markets_with_ladder(markets)
-    text = program.read_text(encoding="utf-8")
-    text = text.replace('  base_url: ""', '  base_url: "https://wallet.example.com"')
-    text = text.replace('  user_key_id: ""', '  user_key_id: "key-1"')
-    text = text.replace('  private_key_pem_path: ""', '  private_key_pem_path: "/tmp/key.pem"')
-    text = text.replace('  vault_id: ""', '  vault_id: "wallet-1"')
-    program.write_text(text, encoding="utf-8")
 
     class _FakeWallet:
         vault_id = "wallet-1"
@@ -1723,3 +1656,797 @@ def test_coin_split_until_ready_reports_not_ready(monkeypatch, tmp_path: Path, c
     assert payload["stop_reason"] == "max_iterations_reached"
     assert payload["denomination_readiness"]["ready"] is False
     assert len(payload["operations"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# _is_spendable_coin unit tests
+# ---------------------------------------------------------------------------
+
+
+def test_is_spendable_coin_allowlist_states_are_spendable() -> None:
+    from greenfloor.cli.manager import _is_spendable_coin
+
+    for state in ("CONFIRMED", "UNSPENT", "SPENDABLE", "AVAILABLE"):
+        assert _is_spendable_coin({"state": state}) is True, state
+
+
+def test_is_spendable_coin_known_non_spendable_states() -> None:
+    from greenfloor.cli.manager import _is_spendable_coin
+
+    for state in ("PENDING", "MEMPOOL", "SPENT", "SPENDING", "LOCKED", "RESERVED", "UNCONFIRMED"):
+        assert _is_spendable_coin({"state": state}) is False, state
+
+
+def test_is_spendable_coin_unknown_state_is_not_spendable() -> None:
+    from greenfloor.cli.manager import _is_spendable_coin
+
+    assert _is_spendable_coin({"state": "MYSTERY"}) is False
+    assert _is_spendable_coin({"state": "TRANSITIONING"}) is False
+
+
+def test_is_spendable_coin_missing_state_is_not_spendable() -> None:
+    from greenfloor.cli.manager import _is_spendable_coin
+
+    assert _is_spendable_coin({}) is False
+    assert _is_spendable_coin({"state": ""}) is False
+
+
+# ---------------------------------------------------------------------------
+# _resolve_coin_global_ids unit tests
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_coin_global_ids_maps_name_to_global_id() -> None:
+    from greenfloor.cli.manager import _resolve_coin_global_ids
+
+    wallet_coins = [{"id": "Coin_abc", "name": "hexname123"}]
+    resolved, unresolved = _resolve_coin_global_ids(wallet_coins, ["hexname123"])
+    assert resolved == ["Coin_abc"]
+    assert unresolved == []
+
+
+def test_resolve_coin_global_ids_passes_through_coin_prefix_ids() -> None:
+    from greenfloor.cli.manager import _resolve_coin_global_ids
+
+    resolved, unresolved = _resolve_coin_global_ids([], ["Coin_direct"])
+    assert resolved == ["Coin_direct"]
+    assert unresolved == []
+
+
+def test_resolve_coin_global_ids_reports_unresolved_names() -> None:
+    from greenfloor.cli.manager import _resolve_coin_global_ids
+
+    wallet_coins = [{"id": "Coin_known", "name": "known"}]
+    resolved, unresolved = _resolve_coin_global_ids(wallet_coins, ["known", "unknown"])
+    assert resolved == ["Coin_known"]
+    assert unresolved == ["unknown"]
+
+
+def test_resolve_coin_global_ids_empty_inputs() -> None:
+    from greenfloor.cli.manager import _resolve_coin_global_ids
+
+    resolved, unresolved = _resolve_coin_global_ids([], [])
+    assert resolved == []
+    assert unresolved == []
+
+
+# ---------------------------------------------------------------------------
+# _evaluate_denomination_readiness unit tests
+# ---------------------------------------------------------------------------
+
+
+def test_evaluate_denomination_readiness_counts_only_spendable_matching_coins() -> None:
+    from greenfloor.cli.manager import _evaluate_denomination_readiness
+
+    class _FakeWallet:
+        @staticmethod
+        def list_coins(*, include_pending=True):
+            return [
+                # ✓ spendable, right asset, right amount
+                {"id": "c1", "state": "CONFIRMED", "amount": 10, "asset": {"id": "a1"}},
+                # ✗ not spendable
+                {"id": "c2", "state": "PENDING", "amount": 10, "asset": {"id": "a1"}},
+                # ✗ wrong asset
+                {"id": "c3", "state": "CONFIRMED", "amount": 10, "asset": {"id": "other"}},
+                # ✗ wrong amount
+                {"id": "c4", "state": "CONFIRMED", "amount": 20, "asset": {"id": "a1"}},
+                # ✓ string-form asset id
+                {"id": "c5", "state": "CONFIRMED", "amount": 10, "asset": "a1"},
+            ]
+
+    result = _evaluate_denomination_readiness(
+        wallet=_FakeWallet(),  # type: ignore[arg-type]
+        asset_id="a1",
+        size_base_units=10,
+        required_min_count=2,
+    )
+    assert result["current_count"] == 2
+    assert result["ready"] is True
+
+
+def test_evaluate_denomination_readiness_returns_not_ready_below_min() -> None:
+    from greenfloor.cli.manager import _evaluate_denomination_readiness
+
+    class _FakeWallet:
+        @staticmethod
+        def list_coins(*, include_pending=True):
+            return [{"id": "c1", "state": "CONFIRMED", "amount": 10, "asset": {"id": "a1"}}]
+
+    result = _evaluate_denomination_readiness(
+        wallet=_FakeWallet(),  # type: ignore[arg-type]
+        asset_id="a1",
+        size_base_units=10,
+        required_min_count=3,
+    )
+    assert result["current_count"] == 1
+    assert result["ready"] is False
+
+
+def test_evaluate_denomination_readiness_max_allowed_count() -> None:
+    from greenfloor.cli.manager import _evaluate_denomination_readiness
+
+    class _FakeWallet:
+        @staticmethod
+        def list_coins(*, include_pending=True):
+            return [
+                {"id": f"c{i}", "state": "CONFIRMED", "amount": 10, "asset": {"id": "a1"}}
+                for i in range(8)
+            ]
+
+    # 8 coins > max_allowed_count of 6 → not ready
+    result = _evaluate_denomination_readiness(
+        wallet=_FakeWallet(),  # type: ignore[arg-type]
+        asset_id="a1",
+        size_base_units=10,
+        max_allowed_count=6,
+    )
+    assert result["current_count"] == 8
+    assert result["ready"] is False
+
+
+def test_evaluate_denomination_readiness_asset_id_match_is_case_insensitive() -> None:
+    from greenfloor.cli.manager import _evaluate_denomination_readiness
+
+    class _FakeWallet:
+        @staticmethod
+        def list_coins(*, include_pending=True):
+            return [{"id": "c1", "state": "CONFIRMED", "amount": 5, "asset": {"id": "A1"}}]
+
+    result = _evaluate_denomination_readiness(
+        wallet=_FakeWallet(),  # type: ignore[arg-type]
+        asset_id="a1",
+        size_base_units=5,
+        required_min_count=1,
+    )
+    assert result["current_count"] == 1
+    assert result["ready"] is True
+
+
+# ---------------------------------------------------------------------------
+# _poll_signature_request_until_not_unsigned tests
+# ---------------------------------------------------------------------------
+
+
+def test_poll_signature_request_returns_immediately_when_already_signed(monkeypatch) -> None:
+    import time as time_module
+
+    from greenfloor.cli.manager import _poll_signature_request_until_not_unsigned
+
+    class _FakeWallet:
+        @staticmethod
+        def get_signature_request(*, signature_request_id):
+            _ = signature_request_id
+            return {"status": "SUBMITTED"}
+
+    monkeypatch.setattr(time_module, "sleep", lambda _: None)
+    monkeypatch.setattr(time_module, "monotonic", lambda: 0.0)
+
+    status, events = _poll_signature_request_until_not_unsigned(
+        wallet=_FakeWallet(),  # type: ignore[arg-type]
+        signature_request_id="sr-1",
+        timeout_seconds=900,
+        warning_interval_seconds=600,
+    )
+    assert status == "SUBMITTED"
+    assert events == []
+
+
+def test_poll_signature_request_emits_warning_event_after_interval(monkeypatch) -> None:
+    import time as time_module
+
+    from greenfloor.cli.manager import _poll_signature_request_until_not_unsigned
+
+    call_count = [0]
+
+    class _FakeWallet:
+        @staticmethod
+        def get_signature_request(*, signature_request_id):
+            _ = signature_request_id
+            call_count[0] += 1
+            return {"status": "UNSIGNED" if call_count[0] < 2 else "SUBMITTED"}
+
+    # monotonic: start=0, then elapsed=601 (triggers warning), then not called again
+    elapsed_seq = iter([0.0, 601.0, 601.0])
+    monkeypatch.setattr(time_module, "sleep", lambda _: None)
+    monkeypatch.setattr(time_module, "monotonic", lambda: next(elapsed_seq))
+
+    status, events = _poll_signature_request_until_not_unsigned(
+        wallet=_FakeWallet(),  # type: ignore[arg-type]
+        signature_request_id="sr-1",
+        timeout_seconds=900,
+        warning_interval_seconds=600,
+    )
+    assert status == "SUBMITTED"
+    warning_events = [e for e in events if e["event"] == "signature_wait_warning"]
+    assert len(warning_events) == 1
+    assert warning_events[0]["message"] == "still_waiting_on_user_signature"
+
+
+def test_poll_signature_request_raises_on_timeout(monkeypatch) -> None:
+    import time as time_module
+
+    import pytest
+
+    from greenfloor.cli.manager import _poll_signature_request_until_not_unsigned
+
+    class _FakeWallet:
+        @staticmethod
+        def get_signature_request(*, signature_request_id):
+            _ = signature_request_id
+            return {"status": "UNSIGNED"}
+
+    # start=0, then elapsed=901 immediately exceeds timeout=900
+    elapsed_seq = iter([0.0, 901.0])
+    monkeypatch.setattr(time_module, "sleep", lambda _: None)
+    monkeypatch.setattr(time_module, "monotonic", lambda: next(elapsed_seq))
+
+    with pytest.raises(RuntimeError, match="signature_request_timeout"):
+        _poll_signature_request_until_not_unsigned(
+            wallet=_FakeWallet(),  # type: ignore[arg-type]
+            signature_request_id="sr-1",
+            timeout_seconds=900,
+            warning_interval_seconds=600,
+        )
+
+
+# ---------------------------------------------------------------------------
+# _wait_for_mempool_then_confirmation tests
+# ---------------------------------------------------------------------------
+
+
+def test_wait_for_mempool_emits_in_mempool_event_with_coinset_url(monkeypatch) -> None:
+    import time as time_module
+
+    from greenfloor.cli.manager import _wait_for_mempool_then_confirmation
+
+    lc_call = [0]
+
+    class _FakeWallet:
+        @staticmethod
+        def list_coins(*, include_pending=True):
+            lc_call[0] += 1
+            if lc_call[0] == 1:
+                return [{"id": "new-id", "name": "abc123hex", "state": "PENDING"}]
+            return [{"id": "new-id", "name": "abc123hex", "state": "CONFIRMED"}]
+
+    elapsed_seq = iter([0.0, 0.0, 0.0])
+    monkeypatch.setattr(time_module, "sleep", lambda _: None)
+    monkeypatch.setattr(time_module, "monotonic", lambda: next(elapsed_seq))
+
+    events = _wait_for_mempool_then_confirmation(
+        wallet=_FakeWallet(),  # type: ignore[arg-type]
+        initial_coin_ids=set(),
+        mempool_warning_seconds=300,
+        confirmation_warning_seconds=900,
+    )
+    in_mempool = [e for e in events if e["event"] == "in_mempool"]
+    assert len(in_mempool) == 1
+    assert in_mempool[0]["coinset_url"] == "https://coinset.org/coin/abc123hex"
+
+
+def test_wait_for_mempool_returns_when_confirmed_coin_appears(monkeypatch) -> None:
+    import time as time_module
+
+    from greenfloor.cli.manager import _wait_for_mempool_then_confirmation
+
+    class _FakeWallet:
+        @staticmethod
+        def list_coins(*, include_pending=True):
+            return [{"id": "new-id", "name": "confirmed-hex", "state": "CONFIRMED"}]
+
+    elapsed_seq = iter([0.0, 0.0])
+    monkeypatch.setattr(time_module, "sleep", lambda _: None)
+    monkeypatch.setattr(time_module, "monotonic", lambda: next(elapsed_seq))
+
+    events = _wait_for_mempool_then_confirmation(
+        wallet=_FakeWallet(),  # type: ignore[arg-type]
+        initial_coin_ids=set(),
+        mempool_warning_seconds=300,
+        confirmation_warning_seconds=900,
+    )
+    # Returns successfully (no in_mempool event since we went straight to confirmed)
+    assert all(e["event"] != "in_mempool" for e in events)
+
+
+def test_wait_for_mempool_emits_warning_when_no_mempool_entry(monkeypatch) -> None:
+    import time as time_module
+
+    from greenfloor.cli.manager import _wait_for_mempool_then_confirmation
+
+    lc_call = [0]
+
+    class _FakeWallet:
+        @staticmethod
+        def list_coins(*, include_pending=True):
+            lc_call[0] += 1
+            if lc_call[0] == 1:
+                return []  # no new coins yet
+            return [{"id": "new-id", "state": "CONFIRMED"}]
+
+    # start=0, iteration-1 elapsed=300 (triggers mempool warning), iteration-2 returns
+    elapsed_seq = iter([0.0, 300.0, 300.0])
+    monkeypatch.setattr(time_module, "sleep", lambda _: None)
+    monkeypatch.setattr(time_module, "monotonic", lambda: next(elapsed_seq))
+
+    events = _wait_for_mempool_then_confirmation(
+        wallet=_FakeWallet(),  # type: ignore[arg-type]
+        initial_coin_ids=set(),
+        mempool_warning_seconds=300,
+        confirmation_warning_seconds=900,
+    )
+    warning_events = [e for e in events if e["event"] == "mempool_wait_warning"]
+    assert len(warning_events) == 1
+
+
+def test_wait_for_mempool_ignores_coins_in_initial_set(monkeypatch) -> None:
+    import time as time_module
+
+    from greenfloor.cli.manager import _wait_for_mempool_then_confirmation
+
+    lc_call = [0]
+
+    class _FakeWallet:
+        @staticmethod
+        def list_coins(*, include_pending=True):
+            lc_call[0] += 1
+            if lc_call[0] == 1:
+                # only known initial coins — should not trigger pending or confirmed
+                return [{"id": "old-id", "state": "CONFIRMED"}]
+            return [
+                {"id": "old-id", "state": "CONFIRMED"},
+                {"id": "new-id", "state": "CONFIRMED"},
+            ]
+
+    elapsed_seq = iter([0.0, 0.0, 0.0])
+    monkeypatch.setattr(time_module, "sleep", lambda _: None)
+    monkeypatch.setattr(time_module, "monotonic", lambda: next(elapsed_seq))
+
+    _wait_for_mempool_then_confirmation(
+        wallet=_FakeWallet(),  # type: ignore[arg-type]
+        initial_coin_ids={"old-id"},
+        mempool_warning_seconds=300,
+        confirmation_warning_seconds=900,
+    )
+    # Returns because new-id appeared in confirmed, but old-id was ignored
+    assert lc_call[0] == 2
+
+
+# ---------------------------------------------------------------------------
+# _build_and_post_offer cloud wallet dispatch gate
+# ---------------------------------------------------------------------------
+
+
+def test_build_and_post_offer_dispatches_to_cloud_wallet_when_configured(
+    monkeypatch, tmp_path: Path
+) -> None:
+    program = tmp_path / "program.yaml"
+    markets = tmp_path / "markets.yaml"
+    _write_program_with_cloud_wallet(program)
+    _write_markets(markets)
+
+    dispatched = [False]
+
+    def _fake_cloud_wallet(**kwargs):
+        dispatched[0] = True
+        return 0
+
+    monkeypatch.setattr(
+        "greenfloor.cli.manager._build_and_post_offer_cloud_wallet",
+        _fake_cloud_wallet,
+    )
+
+    code = _build_and_post_offer(
+        program_path=program,
+        markets_path=markets,
+        network="mainnet",
+        market_id="m1",
+        pair=None,
+        size_base_units=10,
+        repeat=1,
+        publish_venue="dexie",
+        dexie_base_url="https://api.dexie.space",
+        splash_base_url="http://localhost:4000",
+        drop_only=True,
+        claim_rewards=False,
+        dry_run=False,
+    )
+    assert code == 0
+    assert dispatched[0] is True
+
+
+def test_build_and_post_offer_dry_run_bypasses_cloud_wallet_even_when_configured(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    program = tmp_path / "program.yaml"
+    markets = tmp_path / "markets.yaml"
+    _write_program_with_cloud_wallet(program)
+    _write_markets(markets)
+
+    def _fail_if_called(**kwargs):
+        raise AssertionError("cloud wallet path must not be called in dry_run")
+
+    monkeypatch.setattr(
+        "greenfloor.cli.manager._build_and_post_offer_cloud_wallet",
+        _fail_if_called,
+    )
+    monkeypatch.setattr(
+        "greenfloor.cli.manager._build_offer_text_for_request",
+        lambda _: "offer1dryrun",
+    )
+
+    code = _build_and_post_offer(
+        program_path=program,
+        markets_path=markets,
+        network="mainnet",
+        market_id="m1",
+        pair=None,
+        size_base_units=10,
+        repeat=1,
+        publish_venue="dexie",
+        dexie_base_url="https://api.dexie.space",
+        splash_base_url="http://localhost:4000",
+        drop_only=True,
+        claim_rewards=False,
+        dry_run=True,
+    )
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out.strip())
+    assert payload["dry_run"] is True
+
+
+# ---------------------------------------------------------------------------
+# _build_and_post_offer_cloud_wallet direct tests
+# ---------------------------------------------------------------------------
+
+
+def _load_program_and_market(program_path: Path, markets_path: Path):
+    from greenfloor.config.io import load_markets_config, load_program_config
+
+    prog = load_program_config(program_path)
+    mkt = load_markets_config(markets_path).markets[0]
+    return prog, mkt
+
+
+def test_build_and_post_offer_cloud_wallet_happy_path_dexie(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    from greenfloor.cli.manager import _build_and_post_offer_cloud_wallet
+
+    program_path = tmp_path / "program.yaml"
+    markets_path = tmp_path / "markets.yaml"
+    _write_program_with_cloud_wallet(program_path)
+    _write_markets_with_ladder(markets_path)
+    prog, mkt = _load_program_and_market(program_path, markets_path)
+
+    class _FakeWallet:
+        vault_id = "wallet-1"
+        network = "mainnet"
+
+        def __init__(self, _config):
+            pass
+
+        @staticmethod
+        def create_offer(*, offered, requested, fee, expires_at_iso):
+            return {"signature_request_id": "sr-1", "status": "UNSIGNED"}
+
+        @staticmethod
+        def get_wallet():
+            return {"offers": [{"bech32": "offer1testartifact"}]}
+
+    posted = {}
+
+    class _FakeDexie:
+        def __init__(self, _base_url: str):
+            pass
+
+        def post_offer(self, offer: str, *, drop_only: bool, claim_rewards: bool | None):
+            posted["offer"] = offer
+            return {"success": True, "id": "dexie-99"}
+
+    monkeypatch.setattr("greenfloor.cli.manager.CloudWalletAdapter", _FakeWallet)
+    monkeypatch.setattr(
+        "greenfloor.cli.manager._poll_signature_request_until_not_unsigned",
+        lambda **kwargs: ("SUBMITTED", []),
+    )
+    monkeypatch.setattr(
+        "greenfloor.cli.manager._verify_offer_text_for_dexie",
+        lambda _offer: None,
+    )
+    monkeypatch.setattr("greenfloor.cli.manager.DexieAdapter", _FakeDexie)
+
+    code = _build_and_post_offer_cloud_wallet(
+        program=prog,
+        market=mkt,
+        size_base_units=10,
+        repeat=1,
+        publish_venue="dexie",
+        dexie_base_url="https://api.dexie.space",
+        splash_base_url="http://localhost:4000",
+        drop_only=True,
+        claim_rewards=False,
+        quote_price=0.003,
+    )
+    assert code == 0
+    assert posted["offer"] == "offer1testartifact"
+    payload = json.loads(capsys.readouterr().out.strip())
+    assert payload["publish_failures"] == 0
+    assert payload["results"][0]["result"]["id"] == "dexie-99"
+    assert payload["offer_fee_mojos"] == 0
+
+
+def test_build_and_post_offer_cloud_wallet_returns_error_when_no_offer_artifact(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    from greenfloor.cli.manager import _build_and_post_offer_cloud_wallet
+
+    program_path = tmp_path / "program.yaml"
+    markets_path = tmp_path / "markets.yaml"
+    _write_program_with_cloud_wallet(program_path)
+    _write_markets_with_ladder(markets_path)
+    prog, mkt = _load_program_and_market(program_path, markets_path)
+
+    class _FakeWallet:
+        vault_id = "wallet-1"
+        network = "mainnet"
+
+        def __init__(self, _config):
+            pass
+
+        @staticmethod
+        def create_offer(*, offered, requested, fee, expires_at_iso):
+            return {"signature_request_id": "sr-1", "status": "UNSIGNED"}
+
+        @staticmethod
+        def get_wallet():
+            return {"offers": []}  # no offer1... bech32
+
+    monkeypatch.setattr("greenfloor.cli.manager.CloudWalletAdapter", _FakeWallet)
+    monkeypatch.setattr(
+        "greenfloor.cli.manager._poll_signature_request_until_not_unsigned",
+        lambda **kwargs: ("SUBMITTED", []),
+    )
+
+    code = _build_and_post_offer_cloud_wallet(
+        program=prog,
+        market=mkt,
+        size_base_units=10,
+        repeat=1,
+        publish_venue="dexie",
+        dexie_base_url="https://api.dexie.space",
+        splash_base_url="http://localhost:4000",
+        drop_only=True,
+        claim_rewards=False,
+        quote_price=0.003,
+    )
+    assert code == 2
+    payload = json.loads(capsys.readouterr().out.strip())
+    assert payload["publish_failures"] == 1
+    assert payload["results"][0]["result"]["error"] == "cloud_wallet_offer_artifact_unavailable"
+
+
+def test_build_and_post_offer_cloud_wallet_verify_error_blocks_post(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    from greenfloor.cli.manager import _build_and_post_offer_cloud_wallet
+
+    program_path = tmp_path / "program.yaml"
+    markets_path = tmp_path / "markets.yaml"
+    _write_program_with_cloud_wallet(program_path)
+    _write_markets_with_ladder(markets_path)
+    prog, mkt = _load_program_and_market(program_path, markets_path)
+
+    class _FakeWallet:
+        vault_id = "wallet-1"
+        network = "mainnet"
+
+        def __init__(self, _config):
+            pass
+
+        @staticmethod
+        def create_offer(*, offered, requested, fee, expires_at_iso):
+            return {"signature_request_id": "sr-1", "status": "UNSIGNED"}
+
+        @staticmethod
+        def get_wallet():
+            return {"offers": [{"bech32": "offer1badoffer"}]}
+
+    post_called = [False]
+
+    class _FakeDexie:
+        def __init__(self, _base_url: str):
+            pass
+
+        def post_offer(self, offer: str, *, drop_only: bool, claim_rewards: bool | None):
+            post_called[0] = True
+            return {"success": True}
+
+    monkeypatch.setattr("greenfloor.cli.manager.CloudWalletAdapter", _FakeWallet)
+    monkeypatch.setattr(
+        "greenfloor.cli.manager._poll_signature_request_until_not_unsigned",
+        lambda **kwargs: ("SUBMITTED", []),
+    )
+    monkeypatch.setattr(
+        "greenfloor.cli.manager._verify_offer_text_for_dexie",
+        lambda _offer: "wallet_sdk_offer_missing_expiration",
+    )
+    monkeypatch.setattr("greenfloor.cli.manager.DexieAdapter", _FakeDexie)
+
+    code = _build_and_post_offer_cloud_wallet(
+        program=prog,
+        market=mkt,
+        size_base_units=10,
+        repeat=1,
+        publish_venue="dexie",
+        dexie_base_url="https://api.dexie.space",
+        splash_base_url="http://localhost:4000",
+        drop_only=True,
+        claim_rewards=False,
+        quote_price=0.003,
+    )
+    assert code == 2
+    assert post_called[0] is False
+    payload = json.loads(capsys.readouterr().out.strip())
+    assert payload["results"][0]["result"]["error"] == "wallet_sdk_offer_missing_expiration"
+
+
+# ---------------------------------------------------------------------------
+# until_ready success path (stop_reason="ready")
+# ---------------------------------------------------------------------------
+
+
+def test_coin_split_until_ready_succeeds_when_denominations_met(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    program = tmp_path / "program.yaml"
+    markets = tmp_path / "markets.yaml"
+    _write_program_with_cloud_wallet(program, provider="dexie")
+    _write_markets_with_ladder(markets)
+
+    class _FakeWallet:
+        vault_id = "wallet-1"
+
+        def __init__(self, _config):
+            pass
+
+        @staticmethod
+        def list_coins(*, include_pending=True, asset_id=None):
+            # 4 confirmed coins of size 10 for asset a1 → meets required_count=4
+            return [
+                {
+                    "id": f"Coin_{i}",
+                    "name": f"coin-{i}",
+                    "amount": 10,
+                    "state": "CONFIRMED",
+                    "asset": {"id": "a1"},
+                }
+                for i in range(4)
+            ]
+
+        @staticmethod
+        def split_coins(*, coin_ids, amount_per_coin, number_of_coins, fee):
+            return {"signature_request_id": "sr-ok", "status": "SIGNED"}
+
+    monkeypatch.setattr("greenfloor.cli.manager.CloudWalletAdapter", _FakeWallet)
+    monkeypatch.setattr(
+        "greenfloor.cli.manager._resolve_taker_or_coin_operation_fee",
+        lambda *, network: (0, "env_override"),
+    )
+    monkeypatch.setattr(
+        "greenfloor.cli.manager._poll_signature_request_until_not_unsigned",
+        lambda **kwargs: ("SIGNED", []),
+    )
+    monkeypatch.setattr(
+        "greenfloor.cli.manager._wait_for_mempool_then_confirmation",
+        lambda **kwargs: [],
+    )
+
+    code = _coin_split(
+        program_path=program,
+        markets_path=markets,
+        network="mainnet",
+        market_id="m1",
+        pair=None,
+        coin_ids=[],
+        amount_per_coin=0,
+        number_of_coins=0,
+        no_wait=False,
+        size_base_units=10,
+        until_ready=True,
+        max_iterations=3,
+    )
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out.strip())
+    assert payload["stop_reason"] == "ready"
+    assert payload["denomination_readiness"]["ready"] is True
+
+
+# ---------------------------------------------------------------------------
+# coin-combine until_ready requires_new_coin_selection path
+# ---------------------------------------------------------------------------
+
+
+def test_coin_combine_until_ready_with_coin_ids_stops_with_requires_new_coin_selection(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    program = tmp_path / "program.yaml"
+    markets = tmp_path / "markets.yaml"
+    _write_program_with_cloud_wallet(program, provider="dexie")
+    _write_markets_with_ladder(markets)
+
+    class _FakeWallet:
+        vault_id = "wallet-1"
+
+        def __init__(self, _config):
+            pass
+
+        @staticmethod
+        def list_coins(*, include_pending=True, asset_id=None):
+            # 8 coins > combine_threshold=6 → not ready after combine
+            return [
+                {
+                    "id": f"Coin_{i}",
+                    "name": f"coin-{i}",
+                    "amount": 10,
+                    "state": "CONFIRMED",
+                    "asset": {"id": "a1"},
+                }
+                for i in range(8)
+            ]
+
+        @staticmethod
+        def combine_coins(*, number_of_coins, fee, largest_first, asset_id, input_coin_ids=None):
+            return {"signature_request_id": "sr-combine", "status": "SIGNED"}
+
+    monkeypatch.setattr("greenfloor.cli.manager.CloudWalletAdapter", _FakeWallet)
+    monkeypatch.setattr(
+        "greenfloor.cli.manager._resolve_taker_or_coin_operation_fee",
+        lambda *, network: (0, "env_override"),
+    )
+    monkeypatch.setattr(
+        "greenfloor.cli.manager._poll_signature_request_until_not_unsigned",
+        lambda **kwargs: ("SIGNED", []),
+    )
+    monkeypatch.setattr(
+        "greenfloor.cli.manager._wait_for_mempool_then_confirmation",
+        lambda **kwargs: [],
+    )
+
+    # Provide explicit coin IDs so loop cannot auto-select new candidates
+    code = _coin_combine(
+        program_path=program,
+        markets_path=markets,
+        network="mainnet",
+        market_id="m1",
+        pair=None,
+        number_of_coins=6,  # matches combine_threshold and len(coin_ids)
+        asset_id="a1",
+        coin_ids=[f"coin-{i}" for i in range(6)],
+        no_wait=False,
+        size_base_units=10,
+        until_ready=True,
+        max_iterations=3,
+    )
+    assert code == 2
+    payload = json.loads(capsys.readouterr().out.strip())
+    assert payload["stop_reason"] == "requires_new_coin_selection"
+    assert payload["denomination_readiness"]["ready"] is False
