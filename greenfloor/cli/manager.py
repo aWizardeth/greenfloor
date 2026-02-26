@@ -23,7 +23,12 @@ from greenfloor.adapters.coinset import CoinsetAdapter, extract_coinset_tx_ids_f
 from greenfloor.adapters.dexie import DexieAdapter
 from greenfloor.adapters.splash import SplashAdapter
 from greenfloor.cli.offer_builder_sdk import build_offer_text
-from greenfloor.config.io import load_markets_config, load_program_config, load_yaml, write_yaml
+from greenfloor.config.io import (
+    load_markets_config_with_optional_overlay,
+    load_program_config,
+    load_yaml,
+    write_yaml,
+)
 from greenfloor.core.offer_lifecycle import OfferLifecycleState, OfferSignal, apply_offer_signal
 from greenfloor.keys.onboarding import (
     KeyOnboardingSelection,
@@ -41,7 +46,7 @@ from greenfloor.logging_setup import (
 )
 from greenfloor.storage.sqlite import SqliteStore
 
-_TEST_PHASE_OFFER_EXPIRY_MINUTES = 10
+_TEST_PHASE_OFFER_EXPIRY_MINUTES = 5
 _MANAGER_SERVICE_NAME = "manager"
 _manager_file_logger_initialized = False
 _manager_logger = logging.getLogger("greenfloor.manager")
@@ -211,6 +216,20 @@ def _default_markets_config_path() -> str:
     return "config/markets.yaml"
 
 
+def _default_testnet_markets_config_path() -> str:
+    home_default = Path("~/.greenfloor/config/testnet-markets.yaml").expanduser()
+    if home_default.exists():
+        return str(home_default)
+    return ""
+
+
+def _default_cats_config_path() -> str:
+    home_default = Path("~/.greenfloor/config/cats.yaml").expanduser()
+    if home_default.exists():
+        return str(home_default)
+    return "config/cats.yaml"
+
+
 _JSON_OUTPUT_COMPACT = False
 
 
@@ -334,15 +353,27 @@ def _local_catalog_label_hints_for_asset_id(*, canonical_asset_id: str) -> list[
     if not canonical:
         return []
     repo_root = Path(__file__).resolve().parents[2]
+    cats_path = repo_root / "config" / "cats.yaml"
     markets_path = repo_root / "config" / "markets.yaml"
-    if not markets_path.exists():
-        return []
     try:
-        payload = load_yaml(markets_path)
+        cats_payload = load_yaml(cats_path) if cats_path.exists() else {}
+        markets_payload = load_yaml(markets_path) if markets_path.exists() else {}
     except Exception:
         return []
     hints: list[str] = []
-    assets_rows = payload.get("assets") if isinstance(payload, dict) else None
+    cats_rows = cats_payload.get("cats") if isinstance(cats_payload, dict) else None
+    if isinstance(cats_rows, list):
+        for row in cats_rows:
+            if not isinstance(row, dict):
+                continue
+            row_asset_id = str(row.get("asset_id", "")).strip().lower()
+            if row_asset_id != canonical:
+                continue
+            for key in ("base_symbol", "name"):
+                value = str(row.get(key, "")).strip()
+                if value:
+                    hints.append(value)
+    assets_rows = markets_payload.get("assets") if isinstance(markets_payload, dict) else None
     if isinstance(assets_rows, list):
         for row in assets_rows:
             if not isinstance(row, dict):
@@ -354,7 +385,7 @@ def _local_catalog_label_hints_for_asset_id(*, canonical_asset_id: str) -> list[
                 value = str(row.get(key, "")).strip()
                 if value:
                     hints.append(value)
-    markets_rows = payload.get("markets") if isinstance(payload, dict) else None
+    markets_rows = markets_payload.get("markets") if isinstance(markets_payload, dict) else None
     if isinstance(markets_rows, list):
         for row in markets_rows:
             if not isinstance(row, dict):
@@ -470,6 +501,392 @@ def _dexie_lookup_token_for_symbol(*, asset_ref: str, network: str) -> dict | No
         if _labels_match(str(row.get("id", "")), target):
             return row
     return None
+
+
+def _normalize_hex_asset_id(asset_id: str) -> str:
+    normalized = str(asset_id).strip().lower()
+    if normalized.startswith("0x"):
+        normalized = normalized[2:]
+    return normalized
+
+
+def _try_parse_optional_float(raw: str | None) -> float | None:
+    if raw is None:
+        return None
+    cleaned = str(raw).strip()
+    if not cleaned:
+        return None
+    return float(cleaned)
+
+
+def _coerce_optional_str(raw: object) -> str | None:
+    value = str(raw or "").strip()
+    if not value:
+        return None
+    return value
+
+
+def _load_cats_catalog(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {"cats": []}
+    payload = load_yaml(path)
+    rows = payload.get("cats")
+    if rows is None:
+        payload["cats"] = []
+        return payload
+    if not isinstance(rows, list):
+        raise ValueError("cats config must contain cats as a list")
+    return payload
+
+
+def _derive_cat_metadata_from_dexie_row(row: dict[str, Any]) -> dict[str, Any]:
+    cat_id_candidates = [
+        row.get("id"),
+        row.get("assetId"),
+        row.get("asset_id"),
+        row.get("tokenId"),
+        row.get("token_id"),
+        row.get("base_currency"),
+    ]
+    cat_id = ""
+    for candidate in cat_id_candidates:
+        normalized = _normalize_hex_asset_id(str(candidate or ""))
+        if _is_hex_asset_id(normalized):
+            cat_id = normalized
+            break
+    symbol = (
+        _coerce_optional_str(row.get("code") or row.get("base_code") or row.get("symbol")) or ""
+    )
+    name = (
+        _coerce_optional_str(
+            row.get("name")
+            or row.get("base_name")
+            or row.get("display_name")
+            or row.get("displayName")
+        )
+        or ""
+    )
+    dexie_ticker_id = _coerce_optional_str(row.get("ticker_id") or row.get("tickerId"))
+    dexie_pool_id = _coerce_optional_str(row.get("pool_id") or row.get("poolId"))
+    dexie_last_price = _coerce_optional_str(
+        row.get("last_price_xch") or row.get("lastPriceXch") or row.get("price_xch")
+    )
+    return {
+        "asset_id": cat_id,
+        "base_symbol": symbol,
+        "name": name,
+        "dexie": {
+            "ticker_id": dexie_ticker_id,
+            "pool_id": dexie_pool_id,
+            "last_price_xch": dexie_last_price,
+        },
+    }
+
+
+def _cats_add(
+    *,
+    cats_path: Path,
+    network: str,
+    cat_id: str | None,
+    ticker: str | None,
+    name: str | None,
+    base_symbol: str | None,
+    ticker_id: str | None,
+    pool_id: str | None,
+    last_price_xch: str | None,
+    target_usd_per_unit: str | None,
+    use_dexie_lookup: bool,
+    replace: bool,
+) -> int:
+    ref_cat_id = _normalize_hex_asset_id(str(cat_id or ""))
+    ref_ticker = str(ticker or "").strip()
+    if not ref_cat_id and not ref_ticker:
+        print(_format_json_output({"added": False, "error": "must_provide_cat_id_or_ticker"}))
+        return 2
+
+    dexie_row: dict[str, Any] | None = None
+    if use_dexie_lookup:
+        if ref_cat_id:
+            dexie_row = _dexie_lookup_token_for_cat_id(
+                canonical_cat_id_hex=ref_cat_id,
+                network=network,
+            )
+        if dexie_row is None and ref_ticker:
+            dexie_row = _dexie_lookup_token_for_symbol(asset_ref=ref_ticker, network=network)
+        if dexie_row is not None:
+            inferred = _derive_cat_metadata_from_dexie_row(dexie_row)
+            inferred_cat_id = _normalize_hex_asset_id(str(inferred.get("asset_id", "")))
+            if inferred_cat_id and _is_hex_asset_id(inferred_cat_id):
+                enriched = _dexie_lookup_token_for_cat_id(
+                    canonical_cat_id_hex=inferred_cat_id,
+                    network=network,
+                )
+                if enriched is not None:
+                    dexie_row = dict(enriched)
+                    if "code" not in dexie_row:
+                        dexie_row["code"] = inferred.get("base_symbol")
+                    if "name" not in dexie_row:
+                        dexie_row["name"] = inferred.get("name")
+                    if "id" not in dexie_row:
+                        dexie_row["id"] = inferred_cat_id
+
+    dexie_meta = _derive_cat_metadata_from_dexie_row(dexie_row or {})
+    resolved_asset_id = ref_cat_id or _normalize_hex_asset_id(str(dexie_meta.get("asset_id", "")))
+    if not _is_hex_asset_id(resolved_asset_id):
+        print(_format_json_output({"added": False, "error": "cat_id_required_and_must_be_64_hex"}))
+        return 2
+
+    resolved_symbol = (
+        str(base_symbol or "").strip()
+        or str(dexie_meta.get("base_symbol", "")).strip()
+        or ref_ticker.strip().upper()
+    )
+    if not resolved_symbol:
+        print(_format_json_output({"added": False, "error": "base_symbol_is_required"}))
+        return 2
+    resolved_name = str(name or "").strip() or str(dexie_meta.get("name", "")).strip()
+    if not resolved_name:
+        resolved_name = resolved_symbol
+
+    resolved_ticker_id = _coerce_optional_str(ticker_id) or _coerce_optional_str(
+        (dexie_meta.get("dexie") or {}).get("ticker_id")
+    )
+    resolved_pool_id = _coerce_optional_str(pool_id) or _coerce_optional_str(
+        (dexie_meta.get("dexie") or {}).get("pool_id")
+    )
+    resolved_last_price_xch = _coerce_optional_str(last_price_xch) or _coerce_optional_str(
+        (dexie_meta.get("dexie") or {}).get("last_price_xch")
+    )
+
+    parsed_target_usd_per_unit: float | None
+    try:
+        parsed_target_usd_per_unit = _try_parse_optional_float(target_usd_per_unit)
+    except ValueError:
+        print(
+            _format_json_output(
+                {
+                    "added": False,
+                    "error": "target_usd_per_unit_must_be_numeric_if_provided",
+                }
+            )
+        )
+        return 2
+
+    cats_payload = _load_cats_catalog(cats_path)
+    rows = cats_payload.get("cats")
+    if not isinstance(rows, list):
+        raise ValueError("cats config must contain cats as a list")
+
+    new_entry: dict[str, Any] = {
+        "name": resolved_name,
+        "base_symbol": resolved_symbol,
+        "asset_id": resolved_asset_id,
+        "target_usd_per_unit": parsed_target_usd_per_unit,
+        "dexie": {
+            "ticker_id": resolved_ticker_id,
+            "pool_id": resolved_pool_id,
+            "last_price_xch": resolved_last_price_xch,
+        },
+    }
+    existing_index = next(
+        (
+            idx
+            for idx, row in enumerate(rows)
+            if isinstance(row, dict)
+            and _normalize_hex_asset_id(str(row.get("asset_id", ""))) == resolved_asset_id
+        ),
+        None,
+    )
+    if existing_index is not None and not replace:
+        print(
+            _format_json_output(
+                {
+                    "added": False,
+                    "error": "cat_already_exists_use_replace",
+                    "asset_id": resolved_asset_id,
+                }
+            )
+        )
+        return 2
+    if existing_index is None:
+        rows.append(new_entry)
+    else:
+        rows[existing_index] = new_entry
+
+    rows.sort(
+        key=lambda row: (
+            str(row.get("base_symbol", "")).lower() if isinstance(row, dict) else "",
+            str(row.get("asset_id", "")).lower() if isinstance(row, dict) else "",
+        )
+    )
+    cats_payload["cats"] = rows
+    write_yaml(cats_path, cats_payload)
+
+    print(
+        _format_json_output(
+            {
+                "added": True,
+                "replaced_existing": existing_index is not None,
+                "cats_config": str(cats_path),
+                "cat": new_entry,
+                "dexie_lookup_used": bool(use_dexie_lookup),
+                "dexie_match_found": dexie_row is not None,
+            }
+        )
+    )
+    return 0
+
+
+def _cats_list(*, cats_path: Path) -> int:
+    cats_payload = _load_cats_catalog(cats_path)
+    rows = cats_payload.get("cats")
+    if not isinstance(rows, list):
+        raise ValueError("cats config must contain cats as a list")
+    print(
+        _format_json_output(
+            {
+                "cats_config": str(cats_path),
+                "count": len(rows),
+                "cats": rows,
+            }
+        )
+    )
+    return 0
+
+
+def _cats_delete(
+    *,
+    cats_path: Path,
+    network: str,
+    cat_id: str | None,
+    ticker: str | None,
+    use_dexie_lookup: bool,
+    confirm_delete: bool,
+    preflight_only: bool,
+) -> int:
+    ref_cat_id = _normalize_hex_asset_id(str(cat_id or ""))
+    ref_ticker = str(ticker or "").strip()
+    if not ref_cat_id and not ref_ticker:
+        print(_format_json_output({"deleted": False, "error": "must_provide_cat_id_or_ticker"}))
+        return 2
+
+    cats_payload = _load_cats_catalog(cats_path)
+    rows = cats_payload.get("cats")
+    if not isinstance(rows, list):
+        raise ValueError("cats config must contain cats as a list")
+
+    target_asset_id = ref_cat_id
+    if not target_asset_id:
+        ticker_matches: list[dict[str, Any]] = []
+        normalized_ticker = ref_ticker.lower()
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            row_symbol = str(row.get("base_symbol", "")).strip().lower()
+            row_name = str(row.get("name", "")).strip().lower()
+            if normalized_ticker and (
+                row_symbol == normalized_ticker or row_name == normalized_ticker
+            ):
+                ticker_matches.append(row)
+        if len(ticker_matches) == 1:
+            target_asset_id = _normalize_hex_asset_id(str(ticker_matches[0].get("asset_id", "")))
+        elif len(ticker_matches) > 1:
+            print(
+                _format_json_output(
+                    {
+                        "deleted": False,
+                        "error": "ambiguous_ticker_matches_multiple_cats",
+                        "ticker": ref_ticker,
+                    }
+                )
+            )
+            return 2
+
+    if not target_asset_id and use_dexie_lookup and ref_ticker:
+        dexie_row = _dexie_lookup_token_for_symbol(asset_ref=ref_ticker, network=network)
+        if dexie_row is not None:
+            inferred = _derive_cat_metadata_from_dexie_row(dexie_row)
+            target_asset_id = _normalize_hex_asset_id(str(inferred.get("asset_id", "")))
+
+    if not _is_hex_asset_id(target_asset_id):
+        print(
+            _format_json_output({"deleted": False, "error": "cat_id_required_and_must_be_64_hex"})
+        )
+        return 2
+
+    delete_index = next(
+        (
+            idx
+            for idx, row in enumerate(rows)
+            if isinstance(row, dict)
+            and _normalize_hex_asset_id(str(row.get("asset_id", ""))) == target_asset_id
+        ),
+        None,
+    )
+    if delete_index is None:
+        print(
+            _format_json_output(
+                {
+                    "deleted": False,
+                    "error": "cat_not_found",
+                    "asset_id": target_asset_id,
+                }
+            )
+        )
+        return 2
+
+    candidate_entry = rows[delete_index]
+    preflight_payload = {
+        "preflight": True,
+        "delete_requested": True,
+        "cats_config": str(cats_path),
+        "cat": candidate_entry,
+    }
+    print(_format_json_output(preflight_payload))
+    if preflight_only:
+        print(
+            _format_json_output(
+                {
+                    "deleted": False,
+                    "preflight_only": True,
+                    "cats_config": str(cats_path),
+                    "cat": candidate_entry,
+                }
+            )
+        )
+        return 0
+
+    if not confirm_delete:
+        confirmation_message = (
+            f"Delete CAT {str(candidate_entry.get('base_symbol', '')).strip() or target_asset_id} "
+            f"({target_asset_id}) from {cats_path}?"
+        )
+        if not _prompt_yes_no(confirmation_message, prompt_for_override=None):
+            print(
+                _format_json_output(
+                    {
+                        "deleted": False,
+                        "error": "delete_not_confirmed",
+                        "cats_config": str(cats_path),
+                        "cat": candidate_entry,
+                    }
+                )
+            )
+            return 2
+
+    deleted_entry = rows.pop(delete_index)
+    cats_payload["cats"] = rows
+    write_yaml(cats_path, cats_payload)
+    print(
+        _format_json_output(
+            {
+                "deleted": True,
+                "cats_config": str(cats_path),
+                "cat": deleted_entry,
+            }
+        )
+    )
+    return 0
 
 
 def _resolve_cloud_wallet_asset_id(
@@ -684,6 +1101,26 @@ def _pick_new_offer_artifact(*, offers: list[dict], known_markers: set[str]) -> 
     return candidates[0][1]
 
 
+def _wallet_get_wallet_offers(
+    wallet: CloudWalletAdapter,
+    *,
+    is_creator: bool,
+    states: list[str],
+) -> dict[str, Any]:
+    try:
+        return wallet.get_wallet(is_creator=is_creator, states=states, first=100)
+    except TypeError:
+        # Backward compatibility for deterministic test doubles that still expose get_wallet() with no args.
+        return wallet.get_wallet()
+
+
+def _dexie_offer_status(payload: dict[str, Any]) -> int | None:
+    raw_status = payload.get("status")
+    if raw_status is None and isinstance(payload.get("offer"), dict):
+        raw_status = payload["offer"].get("status")
+    return _safe_int(raw_status)
+
+
 def _safe_int(value: object) -> int | None:
     try:
         return int(value)  # type: ignore[arg-type]
@@ -856,7 +1293,11 @@ def _poll_offer_artifact_until_available(
         elapsed = int(time.monotonic() - start)
         wallet_payload = _call_with_moderate_retry(
             action="wallet_get_wallet",
-            call=wallet.get_wallet,
+            call=lambda: _wallet_get_wallet_offers(
+                wallet,
+                is_creator=True,
+                states=["OPEN", "PENDING"],
+            ),
             elapsed_seconds=elapsed,
         )
         offers = wallet_payload.get("offers", [])
@@ -1443,6 +1884,82 @@ def _coin_op_unresolved_error(
     )
 
 
+def _coin_split_lockup_guardrail_error(
+    *,
+    market: Any,
+    selected_venue: str | None,
+    wallet: CloudWalletAdapter,
+    resolved_asset_id: str,
+    spendable_asset_coin_ids: set[str],
+    selected_coin_ids: list[str],
+) -> str:
+    selected_spendable_ids = sorted(set(selected_coin_ids) & spendable_asset_coin_ids)
+    return _format_json_output(
+        {
+            **_coin_op_base_payload(market, selected_venue, wallet),
+            "waited": False,
+            "success": False,
+            "error": "coin_split_guardrail_would_lock_all_spendable_coins",
+            "resolved_asset_id": resolved_asset_id,
+            "spendable_asset_coin_count": len(spendable_asset_coin_ids),
+            "selected_spendable_coin_count": len(selected_spendable_ids),
+            "selected_spendable_coin_ids": selected_spendable_ids,
+            "operator_guidance": (
+                "coin-split would consume all currently spendable coins for this asset; "
+                "leave at least one spendable coin free or pass --allow-lock-all-spendable "
+                "to override intentionally"
+            ),
+        }
+    )
+
+
+def _should_prompt_for_override(prompt_for_override: bool | None) -> bool:
+    if prompt_for_override is not None:
+        return bool(prompt_for_override)
+    return bool(sys.stdin.isatty() and sys.stdout.isatty())
+
+
+def _prompt_yes_no(message: str, *, prompt_for_override: bool | None) -> bool:
+    if not _should_prompt_for_override(prompt_for_override):
+        return False
+    try:
+        answer = input(f"{message} [y/N]: ").strip().lower()
+    except EOFError:
+        return False
+    return answer in {"y", "yes"}
+
+
+def _evaluate_coin_split_gate(
+    *,
+    asset_scoped_coins: list[dict],
+    resolved_asset_id: str,
+    size_base_units: int,
+    required_count: int,
+) -> dict[str, int | bool | str]:
+    spendable_asset_coins = [coin for coin in asset_scoped_coins if _is_spendable_coin(coin)]
+    denom_coins = [
+        coin for coin in spendable_asset_coins if int(coin.get("amount", 0)) == int(size_base_units)
+    ]
+    larger_reserve_coins = [
+        coin for coin in spendable_asset_coins if int(coin.get("amount", 0)) > int(size_base_units)
+    ]
+    current_count = len(denom_coins)
+    extra_denom_count = max(0, current_count - int(required_count))
+    larger_reserve_count = len(larger_reserve_coins)
+    reserve_ready = larger_reserve_count >= 1 or extra_denom_count >= 1
+    ready = current_count >= int(required_count) and reserve_ready
+    return {
+        "asset_id": resolved_asset_id,
+        "size_base_units": int(size_base_units),
+        "required_min_count": int(required_count),
+        "current_count": current_count,
+        "larger_reserve_coin_count": larger_reserve_count,
+        "extra_denom_coin_count": extra_denom_count,
+        "reserve_ready": reserve_ready,
+        "ready": ready,
+    }
+
+
 def _coin_op_result_payload(
     *,
     market: Any,
@@ -1487,9 +2004,14 @@ def _coin_op_result_payload(
 # ---------------------------------------------------------------------------
 
 
-def _validate(program_path: Path, markets_path: Path) -> int:
+def _validate(
+    program_path: Path, markets_path: Path, testnet_markets_path: Path | None = None
+) -> int:
     program = load_program_config(program_path)
-    markets = load_markets_config(markets_path)
+    markets = load_markets_config_with_optional_overlay(
+        path=markets_path,
+        overlay_path=testnet_markets_path,
+    )
     if program.python_min_version != "3.11":
         raise ValueError("program.yaml dev.python.min_version must be 3.11")
     for market in markets.markets:
@@ -1667,6 +2189,21 @@ def _resolve_dexie_base_url(network: str, explicit_base_url: str | None) -> str:
     raise ValueError(f"unsupported network for dexie posting: {network}")
 
 
+def _dexie_offer_view_url(*, dexie_base_url: str, offer_id: str) -> str:
+    clean_offer_id = str(offer_id).strip()
+    if not clean_offer_id:
+        return ""
+    parsed = urllib.parse.urlparse(str(dexie_base_url).strip())
+    host = parsed.netloc.strip().lower()
+    if not host:
+        return ""
+    if host.startswith("api-testnet."):
+        host = host[len("api-") :]
+    elif host.startswith("api."):
+        host = host[len("api.") :]
+    return f"https://{host}/offers/{urllib.parse.quote(clean_offer_id)}"
+
+
 def _resolve_splash_base_url(explicit_base_url: str | None) -> str:
     if explicit_base_url and explicit_base_url.strip():
         return explicit_base_url.strip().rstrip("/")
@@ -1761,7 +2298,11 @@ def _build_and_post_offer_cloud_wallet(
     splash = SplashAdapter(splash_base_url) if (not dry_run and publish_venue == "splash") else None
 
     for _ in range(repeat):
-        prior_wallet_payload = wallet.get_wallet()
+        prior_wallet_payload = _wallet_get_wallet_offers(
+            wallet,
+            is_creator=True,
+            states=["OPEN", "PENDING"],
+        )
         prior_offers = prior_wallet_payload.get("offers", [])
         known_offer_markers = _offer_markers(prior_offers if isinstance(prior_offers, list) else [])
         offer_amount = int(
@@ -1787,6 +2328,8 @@ def _build_and_post_offer_cloud_wallet(
             requested=requested,
             fee=offer_fee_mojos,
             expires_at_iso=expires_at,
+            split_input_coins=True,
+            split_input_coins_fee=0,
         )
         signature_request_id = str(create_result.get("signature_request_id", "")).strip()
         wait_events: list[dict[str, str]] = []
@@ -1879,6 +2422,17 @@ def _build_and_post_offer_cloud_wallet(
         if result.get("success") is False:
             publish_failures += 1
         offer_id = str(result.get("id", "")).strip()
+        result_payload = {
+            **result,
+            "signature_request_id": signature_request_id,
+            "signature_state": signature_state,
+            "wait_events": wait_events,
+        }
+        if publish_venue == "dexie" and offer_id:
+            result_payload["offer_view_url"] = _dexie_offer_view_url(
+                dexie_base_url=dexie_base_url,
+                offer_id=offer_id,
+            )
         if offer_id:
             store.upsert_offer_state(
                 offer_id=offer_id,
@@ -1902,12 +2456,7 @@ def _build_and_post_offer_cloud_wallet(
         post_results.append(
             {
                 "venue": publish_venue,
-                "result": {
-                    **result,
-                    "signature_request_id": signature_request_id,
-                    "signature_state": signature_state,
-                    "wait_events": wait_events,
-                },
+                "result": result_payload,
             }
         )
 
@@ -1944,6 +2493,7 @@ def _build_and_post_offer(
     *,
     program_path: Path,
     markets_path: Path,
+    testnet_markets_path: Path | None = None,
     network: str,
     market_id: str | None,
     pair: str | None,
@@ -1962,7 +2512,10 @@ def _build_and_post_offer(
         raise ValueError("repeat must be positive")
 
     program = load_program_config(program_path)
-    markets = load_markets_config(markets_path)
+    markets = load_markets_config_with_optional_overlay(
+        path=markets_path,
+        overlay_path=testnet_markets_path,
+    )
     market = _resolve_market_for_build(
         markets,
         market_id=market_id,
@@ -2095,7 +2648,14 @@ def _build_and_post_offer(
                 success_value = result.get("success")
                 if success_value is False:
                     publish_failures += 1
-                post_results.append({"venue": "dexie", "result": result})
+                result_payload = dict(result)
+                offer_id = str(result_payload.get("id", "")).strip()
+                if offer_id:
+                    result_payload["offer_view_url"] = _dexie_offer_view_url(
+                        dexie_base_url=dexie_base_url,
+                        offer_id=offer_id,
+                    )
+                post_results.append({"venue": "dexie", "result": result_payload})
             else:
                 assert splash is not None
                 result = splash.post_offer(offer_text)
@@ -2235,6 +2795,7 @@ def _coin_split(
     *,
     program_path: Path,
     markets_path: Path,
+    testnet_markets_path: Path | None = None,
     network: str,
     market_id: str | None,
     pair: str | None,
@@ -2246,10 +2807,16 @@ def _coin_split(
     size_base_units: int | None = None,
     until_ready: bool = False,
     max_iterations: int = 3,
+    allow_lock_all_spendable: bool = False,
+    force_split_when_ready: bool = False,
+    prompt_for_override: bool | None = None,
 ) -> int:
     program = load_program_config(program_path)
     selected_venue = _resolve_venue_for_coin_prep(venue_override=venue)
-    markets = load_markets_config(markets_path)
+    markets = load_markets_config_with_optional_overlay(
+        path=markets_path,
+        overlay_path=testnet_markets_path,
+    )
     market = _resolve_market_for_build(
         markets,
         market_id=market_id,
@@ -2307,12 +2874,42 @@ def _coin_split(
 
     operations: list[dict[str, object]] = []
     final_readiness: dict[str, int | bool | str] | None = None
+    split_gate: dict[str, int | bool | str] | None = None
     stop_reason = "single_pass"
     unresolved_coin_ids: list[str] = []
 
     for iteration in range(1, max_iterations + 1):
         wallet_coins = wallet.list_coins(include_pending=True)
         existing_coin_ids = {str(c.get("id", "")).strip() for c in wallet_coins}
+        asset_scoped_coins = wallet.list_coins(
+            asset_id=resolved_split_asset_id,
+            include_pending=True,
+        )
+        spendable_asset_coin_ids = {
+            str(c.get("id", "")).strip()
+            for c in asset_scoped_coins
+            if _is_spendable_coin(c) and str(c.get("id", "")).strip()
+        }
+        if denomination_target is not None:
+            split_gate = _evaluate_coin_split_gate(
+                asset_scoped_coins=asset_scoped_coins,
+                resolved_asset_id=resolved_split_asset_id,
+                size_base_units=int(denomination_target["size_base_units"]),
+                required_count=int(denomination_target["required_count"]),
+            )
+            final_readiness = split_gate
+            if bool(split_gate["ready"]) and not force_split_when_ready:
+                if _prompt_yes_no(
+                    (
+                        "split gate is already satisfied "
+                        "(target+buffer met and reserve available). Force another split anyway?"
+                    ),
+                    prompt_for_override=prompt_for_override,
+                ):
+                    pass
+                else:
+                    stop_reason = "ready"
+                    break
         if coin_ids:
             resolved_coin_ids, unresolved_coin_ids = _resolve_coin_global_ids(
                 wallet_coins, coin_ids
@@ -2320,10 +2917,6 @@ def _coin_split(
             if unresolved_coin_ids:
                 break
         else:
-            asset_scoped_coins = wallet.list_coins(
-                asset_id=resolved_split_asset_id,
-                include_pending=True,
-            )
             spendable_asset_coins = [c for c in asset_scoped_coins if _is_spendable_coin(c)]
             if not spendable_asset_coins:
                 print(
@@ -2353,6 +2946,32 @@ def _coin_split(
                 raise RuntimeError("coin_split_failed:missing_selected_coin_id")
             resolved_coin_ids = [selected_coin_global_id]
             unresolved_coin_ids = []
+
+        if (
+            not allow_lock_all_spendable
+            and spendable_asset_coin_ids
+            and set(resolved_coin_ids) >= spendable_asset_coin_ids
+        ):
+            if _prompt_yes_no(
+                (
+                    "coin-split would lock all currently spendable coins for this asset. "
+                    "Override and continue?"
+                ),
+                prompt_for_override=prompt_for_override,
+            ):
+                pass
+            else:
+                print(
+                    _coin_split_lockup_guardrail_error(
+                        market=market,
+                        selected_venue=selected_venue,
+                        wallet=wallet,
+                        resolved_asset_id=resolved_split_asset_id,
+                        spendable_asset_coin_ids=spendable_asset_coin_ids,
+                        selected_coin_ids=resolved_coin_ids,
+                    )
+                )
+                return 2
 
         split_result = wallet.split_coins(
             coin_ids=resolved_coin_ids,
@@ -2422,6 +3041,7 @@ def _coin_split(
                 "amount_per_coin": amount_per_coin,
                 "number_of_coins": number_of_coins,
                 "resolved_asset_id": resolved_split_asset_id,
+                "split_gate": split_gate,
             }
         )
     )
@@ -2434,6 +3054,7 @@ def _coin_combine(
     *,
     program_path: Path,
     markets_path: Path,
+    testnet_markets_path: Path | None = None,
     network: str,
     market_id: str | None,
     pair: str | None,
@@ -2448,7 +3069,10 @@ def _coin_combine(
 ) -> int:
     program = load_program_config(program_path)
     selected_venue = _resolve_venue_for_coin_prep(venue_override=venue)
-    markets = load_markets_config(markets_path)
+    markets = load_markets_config_with_optional_overlay(
+        path=markets_path,
+        overlay_path=testnet_markets_path,
+    )
     market = _resolve_market_for_build(
         markets,
         market_id=market_id,
@@ -2611,6 +3235,9 @@ def _bootstrap_home(
     home_dir: Path,
     program_template: Path,
     markets_template: Path,
+    cats_template: Path | None,
+    testnet_markets_template: Path | None,
+    seed_testnet_markets: bool,
     force: bool,
 ) -> int:
     home = home_dir.expanduser().resolve()
@@ -2624,6 +3251,8 @@ def _bootstrap_home(
 
     seeded_program = config_dir / "program.yaml"
     seeded_markets = config_dir / "markets.yaml"
+    seeded_cats = config_dir / "cats.yaml"
+    seeded_testnet_markets = config_dir / "testnet-markets.yaml"
 
     wrote_program = False
     if force or not seeded_program.exists():
@@ -2646,6 +3275,28 @@ def _bootstrap_home(
         )
         wrote_markets = True
 
+    wrote_cats = False
+    if cats_template is not None and (force or not seeded_cats.exists()):
+        cats_data = load_yaml(cats_template)
+        seeded_cats.write_text(
+            yaml.safe_dump(cats_data, sort_keys=False),
+            encoding="utf-8",
+        )
+        wrote_cats = True
+
+    wrote_testnet_markets = False
+    if (
+        seed_testnet_markets
+        and testnet_markets_template is not None
+        and (force or not seeded_testnet_markets.exists())
+    ):
+        testnet_markets_data = load_yaml(testnet_markets_template)
+        seeded_testnet_markets.write_text(
+            yaml.safe_dump(testnet_markets_data, sort_keys=False),
+            encoding="utf-8",
+        )
+        wrote_testnet_markets = True
+
     db_path = (db_dir / "greenfloor.sqlite").resolve()
     store = SqliteStore(db_path)
     try:
@@ -2655,6 +3306,8 @@ def _bootstrap_home(
                 "home_dir": str(home),
                 "program_config": str(seeded_program),
                 "markets_config": str(seeded_markets),
+                "cats_config": str(seeded_cats),
+                "testnet_markets_config": str(seeded_testnet_markets),
                 "force": bool(force),
             },
         )
@@ -2668,20 +3321,34 @@ def _bootstrap_home(
                 "home_dir": str(home),
                 "program_config": str(seeded_program),
                 "markets_config": str(seeded_markets),
+                "cats_config": str(seeded_cats),
+                "testnet_markets_config": (
+                    str(seeded_testnet_markets) if bool(seed_testnet_markets) else ""
+                ),
                 "state_db": str(db_path),
                 "state_dir": str(state_dir),
                 "logs_dir": str(logs_dir),
                 "wrote_program_config": wrote_program,
                 "wrote_markets_config": wrote_markets,
+                "wrote_cats_config": wrote_cats,
+                "wrote_testnet_markets_config": wrote_testnet_markets,
             }
         )
     )
     return 0
 
 
-def _doctor(program_path: Path, markets_path: Path, state_db: str | None) -> int:
+def _doctor(
+    program_path: Path,
+    markets_path: Path,
+    state_db: str | None,
+    testnet_markets_path: Path | None = None,
+) -> int:
     program = load_program_config(program_path)
-    markets = load_markets_config(markets_path)
+    markets = load_markets_config_with_optional_overlay(
+        path=markets_path,
+        overlay_path=testnet_markets_path,
+    )
 
     problems: list[str] = []
     warnings: list[str] = []
@@ -2839,8 +3506,7 @@ def _offers_reconcile(
                 reason = "ok"
                 try:
                     payload = adapter.get_offer(offer_id)
-                    raw_status = payload.get("status")
-                    status = int(raw_status) if raw_status is not None else None
+                    status = _dexie_offer_status(payload)
                     coinset_tx_ids = extract_coinset_tx_ids_from_offer_payload(payload)
                     if coinset_tx_ids:
                         signal_by_tx_id = store.get_tx_signal_state(coinset_tx_ids)
@@ -3062,6 +3728,7 @@ def _offers_cancel(
     offer_ids: list[str],
     cancel_open: bool,
     markets_path: Path | None = None,
+    testnet_markets_path: Path | None = None,
     submit_onchain_after_offchain: bool = False,
     onchain_market_id: str | None = None,
     onchain_pair: str | None = None,
@@ -3072,7 +3739,10 @@ def _offers_cancel(
     if submit_onchain_after_offchain:
         if markets_path is None:
             raise ValueError("markets_path is required for submit_onchain_after_offchain")
-        markets = load_markets_config(markets_path)
+        markets = load_markets_config_with_optional_overlay(
+            path=markets_path,
+            overlay_path=testnet_markets_path,
+        )
         onchain_market = _resolve_market_for_build(
             markets,
             market_id=onchain_market_id,
@@ -3266,6 +3936,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="GreenFloor manager CLI")
     parser.add_argument("--program-config", default=_default_program_config_path())
     parser.add_argument("--markets-config", default=_default_markets_config_path())
+    parser.add_argument("--testnet-markets-config", default=_default_testnet_markets_config_path())
+    parser.add_argument("--cats-config", default=_default_cats_config_path())
     parser.add_argument("--state-db", default="")
     parser.add_argument(
         "--json",
@@ -3329,7 +4001,37 @@ def main() -> None:
     p_bootstrap.add_argument("--home-dir", default="~/.greenfloor")
     p_bootstrap.add_argument("--program-template", default="config/program.yaml")
     p_bootstrap.add_argument("--markets-template", default="config/markets.yaml")
+    p_bootstrap.add_argument("--cats-template", default="config/cats.yaml")
+    p_bootstrap.add_argument("--testnet-markets-template", default="config/testnet-markets.yaml")
+    p_bootstrap.add_argument("--seed-testnet-markets", action="store_true")
     p_bootstrap.add_argument("--force", action="store_true")
+
+    p_cats_add = sub.add_parser("cats-add")
+    p_cats_add.add_argument(
+        "--network", default="mainnet", choices=["mainnet", "testnet", "testnet11"]
+    )
+    p_cats_add.add_argument("--cat-id", default="")
+    p_cats_add.add_argument("--ticker", default="")
+    p_cats_add.add_argument("--name", default="")
+    p_cats_add.add_argument("--base-symbol", default="")
+    p_cats_add.add_argument("--ticker-id", default="")
+    p_cats_add.add_argument("--pool-id", default="")
+    p_cats_add.add_argument("--last-price-xch", default="")
+    p_cats_add.add_argument("--target-usd-per-unit", default="")
+    p_cats_add.add_argument("--no-dexie-lookup", action="store_true")
+    p_cats_add.add_argument("--replace", action="store_true")
+
+    sub.add_parser("cats-list")
+
+    p_cats_delete = sub.add_parser("cats-delete")
+    p_cats_delete.add_argument(
+        "--network", default="mainnet", choices=["mainnet", "testnet", "testnet11"]
+    )
+    p_cats_delete.add_argument("--cat-id", default="")
+    p_cats_delete.add_argument("--ticker", default="")
+    p_cats_delete.add_argument("--no-dexie-lookup", action="store_true")
+    p_cats_delete.add_argument("--yes", action="store_true")
+    p_cats_delete.add_argument("--preflight-only", action="store_true")
 
     p_set_log_level = sub.add_parser("set-log-level")
     p_set_log_level.add_argument("--log-level", required=True)
@@ -3353,6 +4055,8 @@ def main() -> None:
     p_coin_split.add_argument("--until-ready", action="store_true")
     p_coin_split.add_argument("--max-iterations", default=3, type=int)
     p_coin_split.add_argument("--no-wait", action="store_true")
+    p_coin_split.add_argument("--allow-lock-all-spendable", action="store_true")
+    p_coin_split.add_argument("--force-split-when-ready", action="store_true")
 
     p_coin_combine = sub.add_parser("coin-combine")
     combine_market_group = p_coin_combine.add_mutually_exclusive_group(required=True)
@@ -3377,10 +4081,17 @@ def main() -> None:
     p_coin_combine.add_argument("--no-wait", action="store_true")
 
     args = parser.parse_args()
+    testnet_markets_path = (
+        Path(args.testnet_markets_config) if str(args.testnet_markets_config).strip() else None
+    )
     global _JSON_OUTPUT_COMPACT
     _JSON_OUTPUT_COMPACT = bool(args.json)
     if args.command == "config-validate":
-        code = _validate(Path(args.program_config), Path(args.markets_config))
+        code = _validate(
+            Path(args.program_config),
+            Path(args.markets_config),
+            testnet_markets_path,
+        )
     elif args.command == "keys-onboard":
         code = _keys_onboard(
             program_path=Path(args.program_config),
@@ -3401,6 +4112,7 @@ def main() -> None:
         code = _build_and_post_offer(
             program_path=Path(args.program_config),
             markets_path=Path(args.markets_config),
+            testnet_markets_path=testnet_markets_path,
             network=args.network,
             market_id=args.market_id or None,
             pair=args.pair or None,
@@ -3418,6 +4130,7 @@ def main() -> None:
             program_path=Path(args.program_config),
             markets_path=Path(args.markets_config),
             state_db=args.state_db or None,
+            testnet_markets_path=testnet_markets_path,
         )
     elif args.command == "offers-status":
         code = _offers_status(
@@ -3441,6 +4154,7 @@ def main() -> None:
             offer_ids=[str(value) for value in args.offer_id],
             cancel_open=bool(args.cancel_open),
             markets_path=Path(args.markets_config),
+            testnet_markets_path=testnet_markets_path,
             submit_onchain_after_offchain=bool(args.submit_onchain_after_offchain),
             onchain_market_id=args.onchain_market_id or None,
             onchain_pair=args.onchain_pair or None,
@@ -3450,7 +4164,41 @@ def main() -> None:
             home_dir=Path(args.home_dir),
             program_template=Path(args.program_template),
             markets_template=Path(args.markets_template),
+            cats_template=Path(args.cats_template) if str(args.cats_template).strip() else None,
+            testnet_markets_template=(
+                Path(args.testnet_markets_template)
+                if str(args.testnet_markets_template).strip()
+                else None
+            ),
+            seed_testnet_markets=bool(args.seed_testnet_markets),
             force=bool(args.force),
+        )
+    elif args.command == "cats-add":
+        code = _cats_add(
+            cats_path=Path(args.cats_config),
+            network=args.network,
+            cat_id=args.cat_id or None,
+            ticker=args.ticker or None,
+            name=args.name or None,
+            base_symbol=args.base_symbol or None,
+            ticker_id=args.ticker_id or None,
+            pool_id=args.pool_id or None,
+            last_price_xch=args.last_price_xch or None,
+            target_usd_per_unit=args.target_usd_per_unit or None,
+            use_dexie_lookup=not bool(args.no_dexie_lookup),
+            replace=bool(args.replace),
+        )
+    elif args.command == "cats-list":
+        code = _cats_list(cats_path=Path(args.cats_config))
+    elif args.command == "cats-delete":
+        code = _cats_delete(
+            cats_path=Path(args.cats_config),
+            network=args.network,
+            cat_id=args.cat_id or None,
+            ticker=args.ticker or None,
+            use_dexie_lookup=not bool(args.no_dexie_lookup),
+            confirm_delete=bool(args.yes),
+            preflight_only=bool(args.preflight_only),
         )
     elif args.command == "set-log-level":
         code = _set_log_level(
@@ -3467,6 +4215,7 @@ def main() -> None:
         code = _coin_split(
             program_path=Path(args.program_config),
             markets_path=Path(args.markets_config),
+            testnet_markets_path=testnet_markets_path,
             network=args.network,
             market_id=args.market_id or None,
             pair=args.pair or None,
@@ -3478,11 +4227,14 @@ def main() -> None:
             size_base_units=int(args.size_base_units) or None,
             until_ready=bool(args.until_ready),
             max_iterations=int(args.max_iterations),
+            allow_lock_all_spendable=bool(args.allow_lock_all_spendable),
+            force_split_when_ready=bool(args.force_split_when_ready),
         )
     elif args.command == "coin-combine":
         code = _coin_combine(
             program_path=Path(args.program_config),
             markets_path=Path(args.markets_config),
+            testnet_markets_path=testnet_markets_path,
             network=args.network,
             market_id=args.market_id or None,
             pair=args.pair or None,

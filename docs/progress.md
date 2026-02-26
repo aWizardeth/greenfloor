@@ -1,5 +1,133 @@
 # Progress Log
 
+## 2026-02-26 (post-output UX + market config normalization closeout)
+
+- Improved operator UX for `build-and-post-offer` Dexie publishes:
+  - Manager output now includes `results[].result.offer_view_url` whenever Dexie returns an offer ID.
+  - URL is normalized from API base to browser host:
+    - mainnet: `https://dexie.space/offers/<id>`
+    - testnet: `https://testnet.dexie.space/offers/<id>`
+  - Added deterministic coverage for standard + Cloud Wallet posting paths in `tests/test_manager_post_offer.py`.
+- Finalized mainnet market config normalization:
+  - Market IDs now follow pair/mode naming style (`carbon22_sell_xch`, `carbon22_sell_wusdbc`, `byc_two_sided_wusdbc`).
+  - Mainnet receive addresses in base `config/markets.yaml` aligned to `xch1hpppalrmxk7x2vzvf5f5c4ylz6l9kwnjkanqtk3qszegrtkm2lvsr6h0df`.
+  - Updated `carbon22_sell_wusdbc` bucket targets to `1:10`, `10:2`, `100:1`.
+- Confirmed remote environment alignment on `John-Deere`:
+  - branch fast-forwarded to latest commits,
+  - runtime config files synced for `markets.yaml`, `cats.yaml`, and optional `testnet-markets.yaml`,
+  - manager `config-validate` + CAT catalog smoke commands passed.
+
+## 2026-02-26 (mainnet market config normalization + John-Deere sync)
+
+- Normalized active mainnet market IDs in `config/markets.yaml` to pair-first naming:
+  - `carbon22_sell_xch`
+  - `carbon22_sell_wusdbc`
+  - `byc_two_sided_wusdbc`
+- Updated mainnet `receive_address` values in base `markets.yaml` to:
+  - `xch1hpppalrmxk7x2vzvf5f5c4ylz6l9kwnjkanqtk3qszegrtkm2lvsr6h0df`
+- Updated `carbon22_sell_wusdbc` inventory bucket targets to:
+  - `1: 10`, `10: 2`, `100: 1`
+- Added strict base-config address guard in `greenfloor/config/io.py`:
+  - base `markets.yaml` now logs an error and fails validation when any market uses `txch1...` receive addresses,
+  - directs testnet address usage to `testnet-markets.yaml` only.
+- Synced remote `John-Deere` repo/config to current branch and config model:
+  - pulled latest branch,
+  - aligned `~/.greenfloor/config/{markets.yaml,cats.yaml,testnet-markets.yaml}` with repo,
+  - revalidated manager config load path and CAT catalog smoke commands.
+
+## 2026-02-26 (optional testnet markets overlay split from mainnet markets config)
+
+- Split testnet market stanzas out of `config/markets.yaml` into new `config/testnet-markets.yaml`.
+- Added optional markets-overlay loading in config layer:
+  - `greenfloor.config.io.load_markets_config_with_optional_overlay(path=..., overlay_path=...)`
+  - Manager and daemon now load overlay markets only when `--testnet-markets-config` is set (or auto-detected at `~/.greenfloor/config/testnet-markets.yaml`).
+- Added manager/daemon global CLI support for optional testnet market config:
+  - `greenfloor-manager --testnet-markets-config <path> ...`
+  - `greenfloord --testnet-markets-config <path> ...`
+- Added optional bootstrap seeding for developer testnet config:
+  - `greenfloor-manager bootstrap-home --seed-testnet-markets` (from `config/testnet-markets.yaml`).
+- Added deterministic tests:
+  - `tests/test_config_load.py` overlay merge test.
+  - `tests/test_home_bootstrap.py` optional testnet markets bootstrap seeding test.
+- Updated runbook docs for optional testnet-markets overlay usage and seeding.
+
+## 2026-02-26 (CAT catalog migration to config/cats.yaml + manager add/list commands)
+
+- Moved CAT metadata catalog out of `config/markets.yaml` into dedicated `config/cats.yaml` (`cats:` list with `name`, `base_symbol`, `asset_id`, optional legacy price, and Dexie metadata fields).
+- Added manager adjunct commands for CAT catalog operations:
+  - `cats-list`: prints all known CATs from `--cats-config` (default `~/.greenfloor/config/cats.yaml`, fallback repo `config/cats.yaml`).
+  - `cats-add`: adds or replaces CAT entries by `--cat-id` or `--ticker`, with Dexie-assisted lookup by default and full manual override fields (`--name`, `--base-symbol`, `--ticker-id`, `--pool-id`, `--last-price-xch`, `--target-usd-per-unit`).
+- Added `--cats-config` global manager flag and bootstrap seeding support:
+  - `bootstrap-home` now seeds `cats.yaml` via `--cats-template` (default `config/cats.yaml`) alongside `program.yaml` and `markets.yaml`.
+- Updated local CAT label hint resolution fallback used by Cloud Wallet asset resolution:
+  - Manager now reads hints from `config/cats.yaml` first, while retaining legacy market-based fallback behavior for compatibility.
+- Added deterministic tests for CAT catalog command behavior and bootstrap seeding:
+  - `tests/test_manager_cats.py` (manual add, Dexie-assisted add, replace guardrail).
+  - `tests/test_home_bootstrap.py` now validates `cats.yaml` seed/create/keep behavior.
+
+## 2026-02-26 (offer status/reconcile hardening: Dexie shape + Cloud Wallet filters + split-input hints)
+
+- Fixed `offers-reconcile` Dexie status parsing to handle both response shapes:
+  - top-level `status`,
+  - nested `offer.status` (current live `/v1/offers/{id}` shape).
+- Hardened Coinset tx-id extraction in `greenfloor/adapters/coinset.py`:
+  - `extract_coinset_tx_ids_from_offer_payload` now recursively walks nested dict/list payloads instead of only top-level keys.
+  - This allows reconciliation to recover tx-id evidence from nested venue payloads.
+- Tightened Cloud Wallet offer artifact polling in `greenfloor/cli/manager.py`:
+  - wallet offer polling now requests creator-owned active offers (`is_creator=True`, `states=["OPEN","PENDING"]`, bounded page size) before selecting new artifacts.
+  - Added backward-compatible fallback for legacy test doubles that expose `get_wallet()` without filter args.
+- Extended Cloud Wallet offer creation contract in `greenfloor/adapters/cloud_wallet.py`:
+  - `create_offer` now passes `splitInputCoins` and `splitInputCoinsFee` through GraphQL input.
+  - Manager Cloud Wallet posting path now supplies split-input options explicitly.
+- Deterministic regression coverage added/updated:
+  - `tests/test_manager_offer_reconcile.py`: nested Dexie payload status handling.
+  - `tests/test_cloud_wallet_adapter.py`: create-offer split-input options + wallet-offer filter arguments.
+  - `tests/test_manager_post_offer.py`: artifact polling filter arguments and updated Cloud Wallet create-offer fake signatures.
+- Validation snapshot:
+  - `.venv/bin/python -m pytest tests/test_manager_offer_reconcile.py tests/test_cloud_wallet_adapter.py tests/test_manager_post_offer.py -k "nested_dexie_offer_payload_shape or cloud_wallet_create_offer_includes_split_input_coin_options or cloud_wallet_get_wallet_passes_offer_filters or poll_offer_artifact_until_available_requests_creator_open_pending or build_and_post_offer_cloud_wallet"` -> `8 passed`
+
+## 2026-02-26 (plan/progress clarification: dual Cloud Wallet cancel-mode support)
+
+- Clarified active cancellation policy in planning/progress docs:
+  - GreenFloor supports both Cloud Wallet cancellation modes:
+    - standard on-chain cancellation (`cancelOffChain: false`),
+    - off-chain cancellation (`cancelOffChain: true`) when org feature flag `OFFER_CANCEL_OFF_CHAIN` is enabled.
+  - Until production support for `OFFER_CANCEL_OFF_CHAIN` is available, operational workflows proceed using the standard on-chain cancellation API.
+- Updated `docs/plan.md` to document this dual-mode compatibility contract and explicit production-default behavior.
+
+## 2026-02-26 (logging stream alignment + runtime log-level controls + CI drift hardening)
+
+- Merged logging alignment and operator controls via PR `#37`:
+  - Added shared rotating file logging setup in `greenfloor/logging_setup.py` using `ConcurrentRotatingFileHandler`.
+  - Manager and daemon now log to `~/.greenfloor/logs/debug.log` with rotation policy:
+    - `maxBytes=25 MiB`
+    - `backupCount=4`
+  - Signed-offer artifact logs moved from stderr prints to structured INFO logs on the rotating file stream.
+- Added runtime-configurable log levels from `app.log_level` in `config/program.yaml`:
+  - Program config parsing now normalizes/validates level values (`CRITICAL|ERROR|WARNING|INFO|DEBUG|NOTSET`).
+  - Missing `app.log_level` is auto-healed to `INFO` in `program.yaml`.
+  - Added warning diagnostics when auto-heal occurs after logging initialization.
+  - Added manager command `set-log-level --log-level <LEVEL>` to update `program.yaml` safely.
+- Added daemon runtime log-level refresh without restart:
+  - daemon loop now reapplies configured log level each cycle so operator updates take effect live.
+- Added websocket failure diagnostics and guardrails:
+  - WARN-level websocket disconnect/recovery failure logs in `greenfloor/daemon/coinset_ws.py`.
+  - Added `NullHandler` on websocket module logger to avoid noisy fallback behavior outside daemon bootstrap.
+- CI/local tooling drift hardening:
+  - CI now runs `pre-commit run --all-files` from the project venv environment.
+  - Pinned dev tooling versions in `pyproject.toml` to match local pre-commit execution:
+    - `ruff==0.9.10`
+    - `pyright==1.1.408`
+    - `pytest==9.0.2`
+    - `pre-commit==4.5.1`
+  - Updated local pre-commit hook entries for pyright/pytest to call `.venv` binaries directly.
+- Added deterministic test coverage for:
+  - log-level defaulting/auto-heal,
+  - manager log-level CLI dispatch/update,
+  - daemon runtime log-level refresh,
+  - daemon startup/shutdown and auto-heal warning log emission,
+  - websocket WARN logging behavior.
+
 ## 2026-02-26 (course pivot: defer OFFER_CANCEL_OFF_CHAIN work; add signed-offer logging)
 
 - Course adjustment recorded:
