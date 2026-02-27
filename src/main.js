@@ -242,7 +242,7 @@ pages.dashboard = async function (content) {
     // Keys switcher
     const keysRes = await api('/api/sage-rpc/keys')
     if (keysRes.ok && (keysRes.keys || []).length > 0) {
-      const keyToggle = el('details', { style: 'margin-top:12px' })
+      const keyToggle = el('details', { style: 'margin-top:12px', open: true })
       keyToggle.appendChild(el('summary', {
         style: 'cursor:pointer;font-size:12px;color:var(--muted);user-select:none'
       }, `${keysRes.keys.length} wallet keys — click to switch`))
