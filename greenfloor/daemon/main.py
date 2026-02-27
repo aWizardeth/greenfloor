@@ -671,6 +671,79 @@ def _run_coinset_signal_capture_once(
     )
 
 
+def _daemon_sage_coin_preflight(
+    *,
+    asset_id: str,
+    offer_mojos: int,
+    number_of_coins: int,
+    receive_address: str,
+) -> bool:
+    """Check Sage has enough denominated coins; submit a split if not.
+
+    Returns True when coins are ready (offer building can proceed).
+    Returns False when coins are insufficient — a split has been submitted
+    and the caller should skip this cycle's offers for this action size;
+    the next daemon cycle will see the confirmed split coins.
+
+    No polling wait: this is fire-and-skip, not fire-and-wait.
+    """
+    _xch_ids = {"xch", "txch", "1", ""}
+    if not asset_id or asset_id.strip().lower() in _xch_ids:
+        return True  # XCH: Sage handles coin selection internally
+
+    import asyncio as _asyncio
+    from greenfloor.adapters.sage_rpc import SageRpcError as _SageRpcError, resolve_sage_client as _resolve_sage_client
+
+    def _count_eligible(coins: list[dict]) -> int:
+        count = 0
+        for c in coins:
+            if c.get("spent_height") is not None:
+                continue
+            try:
+                if int(c.get("amount", 0)) == offer_mojos:
+                    count += 1
+            except (TypeError, ValueError):
+                pass
+        return count
+
+    async def _check_and_split() -> tuple[bool, int]:
+        async with _resolve_sage_client() as client:
+            result = await client.get_coins(asset_id=asset_id, limit=200)
+            eligible = _count_eligible(list(result.get("coins", [])))
+            if eligible >= number_of_coins:
+                return True, eligible
+            needed = number_of_coins - eligible
+            await client.bulk_send_cat(
+                asset_id=asset_id,
+                addresses=[receive_address] * needed,
+                amount=offer_mojos,
+                fee=0,
+                auto_submit=True,
+            )
+            return False, eligible
+
+    try:
+        ready, eligible = _asyncio.run(_check_and_split())
+        if ready:
+            _daemon_logger.debug(
+                "coin_preflight_ok asset_id=%s eligible=%d needed=%d",
+                asset_id, eligible, number_of_coins,
+            )
+        else:
+            _daemon_logger.info(
+                "coin_preflight_split_submitted asset_id=%s eligible=%d needed=%d"
+                " offer_mojos=%d — skipping offers this cycle",
+                asset_id, eligible, number_of_coins, offer_mojos,
+            )
+        return ready
+    except Exception as exc:
+        _daemon_logger.warning(
+            "coin_preflight_error asset_id=%s error=%s — proceeding with offer attempt",
+            asset_id, exc,
+        )
+        return True  # Don't block on preflight errors; let offer attempt surface its own failure
+
+
 def _execute_strategy_actions(
     *,
     market,
@@ -694,6 +767,26 @@ def _execute_strategy_actions(
     # Use Sage RPC wallet when no keyring path is configured and Sage certs are present.
     use_sage_wallet = sage_certs_present()
     for action in strategy_actions:
+        if use_sage_wallet and not runtime_dry_run:
+            pricing = _market_pricing(market)
+            _base_mojo_mult = int(pricing.get("base_unit_mojo_multiplier", 1000))
+            _offer_mojos = int(action.size) * _base_mojo_mult
+            _preflight_ok = _daemon_sage_coin_preflight(
+                asset_id=str(market.base_asset),
+                offer_mojos=_offer_mojos,
+                number_of_coins=int(action.repeat),
+                receive_address=str(market.receive_address),
+            )
+            if not _preflight_ok:
+                for _ in range(int(action.repeat)):
+                    items.append({
+                        "size": action.size,
+                        "status": "skipped",
+                        "reason": "coin_preflight_split_submitted",
+                        "offer_id": None,
+                    })
+                continue
+
         for _ in range(int(action.repeat)):
             if runtime_dry_run:
                 items.append(
