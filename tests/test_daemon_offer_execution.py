@@ -308,7 +308,7 @@ def test_build_offer_for_action_direct_builder_call(monkeypatch) -> None:
     assert built["offer"] == "offer1direct-10"
     assert captured["payload"]["quote_price_quote_per_base"] == 0.5
     assert captured["payload"]["base_unit_mojo_multiplier"] == 1000
-    assert captured["payload"]["quote_unit_mojo_multiplier"] == 1000
+    assert captured["payload"]["quote_unit_mojo_multiplier"] == 1_000_000_000_000
     assert captured["payload"]["key_id"] == "key-main-1"
     assert captured["payload"]["network"] == "mainnet"
     assert captured["payload"]["keyring_yaml_path"] == "/tmp/keyring.yaml"

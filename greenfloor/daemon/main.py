@@ -497,7 +497,11 @@ def _build_offer_for_action(
         "expiry_value": int(action.expiry_value),
         "quote_price_quote_per_base": quote_price,
         "base_unit_mojo_multiplier": int(pricing.get("base_unit_mojo_multiplier", 1000)),
-        "quote_unit_mojo_multiplier": int(pricing.get("quote_unit_mojo_multiplier", 1000)),
+        "quote_unit_mojo_multiplier": (
+            1_000_000_000_000
+            if str(getattr(market, "quote_asset", "") or "").strip().lower() in {"xch", "txch", "1"}
+            else int(pricing.get("quote_unit_mojo_multiplier", 1000))
+        ),
         "key_id": market.signer_key_id,
         "keyring_yaml_path": keyring_yaml_path,
         "network": network,
