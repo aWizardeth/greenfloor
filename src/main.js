@@ -722,28 +722,34 @@ pages.offers = async function (content) {
     onclick: async () => {
       if (!confirm('Cancel ALL active offers in your Sage wallet?')) return
       btnCancelAll.disabled = true; btnCancelAll.textContent = 'Cancelling…'
-      const r = await api('/api/sage-rpc/offers/cancel-all', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
-      })
-      btnCancelAll.disabled = false; btnCancelAll.textContent = '✕ Cancel All'
-      if (r.ok) {
-        alert(`Cancelled ${r.cancelled} of ${r.total} offers.${r.failed ? ` ${r.failed} failed.` : ''}`)
-        loadSageOffers()
-      } else {
-        alert('Cancel all failed: ' + (r.error || JSON.stringify(r)))
+      try {
+        const r = await api('/api/sage-rpc/offers/cancel-all', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        })
+        btnCancelAll.disabled = false; btnCancelAll.textContent = '✕ Cancel All'
+        if (r.ok) {
+          const failDetails = (r.results || []).filter(x => !x.ok).map(x => `${x.offer_id}: ${x.error}`).join('\n')
+          alert(`Cancelled ${r.cancelled} of ${r.total} offers.${r.failed ? ` ${r.failed} failed.` : ''}${failDetails ? '\n\nErrors:\n' + failDetails : ''}`)
+          loadSageOffers()
+        } else {
+          alert('Cancel all failed: ' + (r.error || r.body || JSON.stringify(r)))
+        }
+      } catch (err) {
+        btnCancelAll.disabled = false; btnCancelAll.textContent = '✕ Cancel All'
+        alert('Cancel all request failed: ' + String(err))
       }
     },
   }, '✕ Cancel All')
   topbar.appendChild(el('div', { class: 'btn-group' }, btnRefresh, btnReconcile, btnCancelAll))
 
-  const statusCard = el('div', { class: 'card' })
   const sageCard = el('div', { class: 'card' })
+  const statusCard = el('div', { class: 'card' })
   const reconCard = el('div', { class: 'card' })
   reconCard.style.display = 'none'
-  content.appendChild(statusCard)
   content.appendChild(sageCard)
+  content.appendChild(statusCard)
   content.appendChild(reconCard)
 
   async function loadOffers() {
@@ -822,6 +828,7 @@ pages.offers = async function (content) {
       return
     }
     const offers = res.offers || []
+    if (offers.length) console.log('[GreenFloor] Sage offers sample (first record):', JSON.stringify(offers[0], null, 2))
     if (!offers.length) {
       sageCard.appendChild(el('div', { class: 'empty' }, 'No active offers in Sage wallet.'))
       return
@@ -853,8 +860,10 @@ pages.offers = async function (content) {
         return t
       }
       const idEl = el('span', { style: 'font-family:var(--font-mono);font-size:10px' })
-      idEl.textContent = String(o.offer_id || '—').slice(0, 20) + (String(o.offer_id || '').length > 20 ? '…' : '')
-      idEl.title = o.offer_id || ''
+      // Sage may return offer_id, trade_id, or id — check all three
+      const rawId = o.offer_id || o.trade_id || o.id || ''
+      idEl.textContent = String(rawId || '—').slice(0, 20) + (String(rawId).length > 20 ? '…' : '')
+      idEl.title = String(rawId)
       row.appendChild(td2(idEl))
       row.appendChild(el('td', {}, badge(status, stateColor)))
       // Offered / requested asset summaries
@@ -872,23 +881,29 @@ pages.offers = async function (content) {
       row.appendChild(td2(reqAssets))
       // Cancel button cell
       const actionTd = el('td')
-      if (isActive) {
+      if (isActive && rawId) {
         const cancelBtn = el('button', {
           class: 'btn btn-secondary',
           style: 'font-size:11px;padding:2px 8px;color:var(--red)',
           onclick: async () => {
             cancelBtn.disabled = true; cancelBtn.textContent = '…'
-            const r = await api('/api/sage-rpc/offers/cancel', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ offer_id: o.offer_id }),
-            })
-            if (r.ok) {
-              row.style.opacity = '0.4'
-              cancelBtn.textContent = '✓'
-            } else {
+            try {
+              const r = await api('/api/sage-rpc/offers/cancel', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ offer_id: rawId }),
+              })
+              if (r.ok) {
+                row.style.opacity = '0.4'
+                cancelBtn.textContent = '✓'
+              } else {
+                cancelBtn.disabled = false; cancelBtn.textContent = '✕ Cancel'
+                const detail = r.error || r.body || JSON.stringify(r)
+                alert(`Cancel failed (${r.endpoint || 'cancel_offer'}):\n${detail}`)
+              }
+            } catch (err) {
               cancelBtn.disabled = false; cancelBtn.textContent = '✕ Cancel'
-              alert('Cancel failed: ' + (r.error || JSON.stringify(r)))
+              alert('Cancel request failed: ' + String(err))
             }
           },
         }, '✕ Cancel')
