@@ -14,6 +14,14 @@ class SignerKeyConfig:
     keyring_yaml_path: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class SageRpcConfig:
+    enabled: bool = False
+    port: int = 9257
+    cert_path: str = ""
+    key_path: str = ""
+
+
 @dataclass(slots=True)
 class ProgramConfig:
     app_network: str
@@ -51,6 +59,7 @@ class ProgramConfig:
     app_log_level: str = "INFO"
     app_log_level_was_missing: bool = False
     signer_key_registry: dict[str, SignerKeyConfig] = field(default_factory=dict)
+    sage_rpc: SageRpcConfig = field(default_factory=lambda: SageRpcConfig())
 
 
 @dataclass(slots=True)
@@ -134,6 +143,17 @@ def _validate_strategy_pricing(pricing: dict[str, Any], market_id: str) -> None:
         raise ValueError(
             f"market {market_id}: strategy_min_xch_price_usd must be <= strategy_max_xch_price_usd"
         )
+
+
+def _parse_sage_rpc_config(raw: dict[str, Any] | None) -> SageRpcConfig:
+    if not raw:
+        return SageRpcConfig()
+    return SageRpcConfig(
+        enabled=bool(raw.get("enabled", False)),
+        port=int(raw.get("port", 9257)),
+        cert_path=str(raw.get("cert_path", "") or "").strip(),
+        key_path=str(raw.get("key_path", "") or "").strip(),
+    )
 
 
 def parse_program_config(raw: dict[str, Any]) -> ProgramConfig:
@@ -259,6 +279,7 @@ def parse_program_config(raw: dict[str, Any]) -> ProgramConfig:
         app_log_level=app_log_level,
         app_log_level_was_missing=app_log_level_was_missing,
         signer_key_registry=key_registry,
+        sage_rpc=_parse_sage_rpc_config(raw.get("sage_rpc", {})),
     )
 
 

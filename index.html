@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>GreenFloor</title>
+  <link rel="stylesheet" href="/src/style.css"/>
+</head>
+<body>
+
+<!-- Sidebar -->
+<div id="sidebar">
+  <div id="sidebar-header">
+    <h1>🌿 GreenFloor</h1>
+    <p>CAT Market Maker</p>
+  </div>
+  <nav>
+    <a class="active" data-page="dashboard"><span class="icon">🏠</span> Dashboard</a>
+    <a data-page="markets"><span class="icon">📊</span> Markets</a>
+    <a data-page="offers"><span class="icon">📋</span> Offers</a>
+    <a data-page="coins"><span class="icon">💰</span> Coins</a>
+    <a data-page="build"><span class="icon">📤</span> Build Offer</a>
+    <a data-page="config"><span class="icon">⚙️</span> Config</a>
+    <a data-page="settings"><span class="icon">🔑</span> Settings</a>
+  </nav>
+  <div id="sidebar-footer">
+    <div id="env-info">Loading…</div>
+  </div>
+</div>
+
+<!-- Main -->
+<div id="main">
+  <div id="topbar">
+    <h2 id="page-title">Dashboard</h2>
+    <div id="topbar-actions"></div>
+  </div>
+  <div id="content">
+    <div class="loading-row"><div class="spinner"></div> Loading…</div>
+  </div>
+</div>
+
+<script type="module" src="/src/main.js"></script>
+</body>
+</html>

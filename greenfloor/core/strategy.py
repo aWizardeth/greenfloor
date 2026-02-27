@@ -10,6 +10,10 @@ class MarketState:
     tens: int
     hundreds: int
     xch_price_usd: float | None = None
+    # Generic bucket map for arbitrary ladder sizes (e.g. size=5).
+    # When populated, used in place of `ones`/`tens`/`hundreds` for
+    # markets that define non-standard bucket sizes.
+    buckets_by_size: dict[int, int] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,6 +25,9 @@ class StrategyConfig:
     target_spread_bps: int | None = None
     min_xch_price_usd: float | None = None
     max_xch_price_usd: float | None = None
+    # Generic target map for arbitrary ladder sizes.  When populated,
+    # `evaluate_market` uses this instead of ones/tens/hundreds lookup.
+    targets_by_size: dict[int, int] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,16 +66,40 @@ def evaluate_market(
             return []
     expiry_unit, expiry_value = _PAIR_EXPIRY_CONFIG.get(pair, _PAIR_EXPIRY_CONFIG["xch"])
 
+    # Generic ladder: use targets_by_size + buckets_by_size when both are available.
+    if config.targets_by_size is not None:
+        current_by_size = (state.buckets_by_size or {}) if state.buckets_by_size is not None else {}
+        offer_configs_generic = [
+            (size, int(current_by_size.get(size, 0)), int(target))
+            for size, target in sorted(config.targets_by_size.items())
+        ]
+        actions: list[PlannedAction] = []
+        for size, current, target in offer_configs_generic:
+            if current < target:
+                actions.append(
+                    PlannedAction(
+                        size=size,
+                        repeat=target - current,
+                        pair=pair,
+                        expiry_unit=expiry_unit,
+                        expiry_value=expiry_value,
+                        cancel_after_create=True,
+                        reason="below_target",
+                        target_spread_bps=config.target_spread_bps,
+                    )
+                )
+        return actions
+
     offer_configs = [
         (1, state.ones, config.ones_target),
         (10, state.tens, config.tens_target),
         (100, state.hundreds, config.hundreds_target),
     ]
 
-    actions: list[PlannedAction] = []
+    legacy_actions: list[PlannedAction] = []
     for size, current, target in offer_configs:
         if current < target:
-            actions.append(
+            legacy_actions.append(
                 PlannedAction(
                     size=size,
                     repeat=target - current,
@@ -80,4 +111,4 @@ def evaluate_market(
                     target_spread_bps=config.target_spread_bps,
                 )
             )
-    return actions
+    return legacy_actions
