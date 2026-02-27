@@ -28,14 +28,12 @@ _default_fingerprint: int | None = None
 
 
 def configure_sage_fingerprint(fingerprint: int | None) -> None:
-    """Pin every subsequent resolve_sage_client() session to *fingerprint*.
+    """Store the configured fingerprint as the module-level default.
 
-    Call once at process startup after loading the program config.  When set,
-    every Sage RPC session calls ``login(fingerprint)`` on open, ensuring the
-    daemon always operates on the configured wallet regardless of which key is
-    currently active in the Sage UI.  Switching wallets in the Sage UI will not
-    affect the daemon; the configured fingerprint is re-asserted on every call.
-    Pass ``None`` to use whichever wallet is currently active in Sage.
+    This is called once at server startup.  It does NOT call login(); the
+    actual Sage login RPC is issued separately (once at startup via
+    _on_startup, and on demand via the webui login button).  Switching
+    wallets only happens when explicitly requested -- not on every session.
     """
     global _default_fingerprint
     _default_fingerprint = fingerprint
@@ -104,8 +102,6 @@ class SageRpcClient:
 
     async def __aenter__(self) -> "SageRpcClient":
         self._session = self._make_session()
-        if self._fingerprint is not None:
-            await self.login(self._fingerprint)
         return self
 
     async def __aexit__(self, *_: Any) -> None:
