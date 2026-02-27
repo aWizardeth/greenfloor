@@ -31,7 +31,14 @@ class _FakeStore:
         self.offer_states: list[dict] = []
 
     def upsert_offer_state(
-        self, *, offer_id: str, market_id: str, state: str, last_seen_status: int | None
+        self,
+        *,
+        offer_id: str,
+        market_id: str,
+        state: str,
+        last_seen_status: int | None,
+        direction: str | None = None,
+        size_base_units: int | None = None,
     ) -> None:
         self.offer_states.append(
             {
@@ -39,6 +46,8 @@ class _FakeStore:
                 "market_id": market_id,
                 "state": state,
                 "last_seen_status": last_seen_status,
+                "direction": direction,
+                "size_base_units": size_base_units,
             }
         )
 

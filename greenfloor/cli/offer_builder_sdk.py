@@ -154,6 +154,13 @@ async def _sage_make_offer_async(payload: dict[str, Any]) -> str:
     offered_asset_id: str | None = None if asset_id_raw in xch_ids else asset_id_raw
     requested_asset_id: str | None = None if quote_asset_raw in xch_ids else quote_asset_raw
 
+    # For buy-side offers the market maker offers XCH and requests the base CAT:
+    # swap the assets and amounts so the offer encodes the correct direction.
+    direction = str(payload.get("direction", "sell")).strip().lower()
+    if direction == "buy":
+        offered_asset_id, requested_asset_id = requested_asset_id, offered_asset_id
+        offer_amount, request_amount = request_amount, offer_amount
+
     expiration_seconds = _expiry_to_seconds(expiry_unit, expiry_value)
 
     offer_params: dict[str, Any] = {

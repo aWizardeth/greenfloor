@@ -40,6 +40,9 @@ class PlannedAction:
     cancel_after_create: bool
     reason: str
     target_spread_bps: int | None = None
+    # "sell": offer base asset, request quote asset.
+    # "buy":  offer quote asset (XCH), request base asset.
+    direction: str = "sell"
 
 
 _PAIR_EXPIRY_CONFIG: dict[str, tuple[str, int]] = {
@@ -52,6 +55,8 @@ def evaluate_market(
     state: MarketState,
     config: StrategyConfig,
     clock: datetime,
+    *,
+    direction: str = "sell",
 ) -> list[PlannedAction]:
     _ = clock
     pair = config.pair.lower()
@@ -86,6 +91,7 @@ def evaluate_market(
                         cancel_after_create=True,
                         reason="below_target",
                         target_spread_bps=config.target_spread_bps,
+                        direction=direction,
                     )
                 )
         return actions
@@ -109,6 +115,7 @@ def evaluate_market(
                     cancel_after_create=True,
                     reason="below_target",
                     target_spread_bps=config.target_spread_bps,
+                    direction=direction,
                 )
             )
     return legacy_actions
