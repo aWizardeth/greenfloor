@@ -84,7 +84,7 @@ notifications:
 sage_rpc:
   # Set enabled: true when Sage wallet RPC is running locally.
   # Sage default port is 9257. Enable the RPC server in Sage Settings -> RPC.
-  enabled: false
+  enabled: true
   port: 9257
   # Leave blank to auto-detect from the OS Sage data directory.
   # Auto-detected paths (per OS):

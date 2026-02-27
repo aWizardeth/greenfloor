@@ -17,6 +17,8 @@ from typing import Any
 
 from aiohttp import web
 
+from greenfloor.webui.market_loop import MarketLoop
+
 logger = logging.getLogger("greenfloor.webui")
 
 # ---------------------------------------------------------------------------
@@ -477,7 +479,46 @@ async def handle_markets_write(request: web.Request) -> web.Response:
         return web.json_response({"ok": False, "error": str(exc)}, status=500)
 
 
+# ---------------------------------------------------------------------------
+# Market loop handlers
+# ---------------------------------------------------------------------------
+
+async def handle_market_loop_status(request: web.Request) -> web.Response:
+    loop: MarketLoop = request.app["market_loop"]
+    return web.json_response(loop.status())
+
+
+async def handle_market_loop_start(request: web.Request) -> web.Response:
+    loop: MarketLoop = request.app["market_loop"]
+    status = loop.status()
+    if not status["sage_connected"]:
+        return web.json_response({"ok": False, "error": "sage_not_connected"}, status=400)
+    if status["enabled_markets"] == 0:
+        return web.json_response({"ok": False, "error": "no_enabled_markets"}, status=400)
+    loop.start()
+    return web.json_response({"ok": True, "status": loop.status()})
+
+
+async def handle_market_loop_stop(request: web.Request) -> web.Response:
+    loop: MarketLoop = request.app["market_loop"]
+    loop.stop()
+    return web.json_response({"ok": True, "status": loop.status()})
+
+
+async def handle_market_loop_trigger(request: web.Request) -> web.Response:
+    loop: MarketLoop = request.app["market_loop"]
+    status = loop.status()
+    if not status["sage_connected"]:
+        return web.json_response({"ok": False, "error": "sage_not_connected"}, status=400)
+    if status["enabled_markets"] == 0:
+        return web.json_response({"ok": False, "error": "no_enabled_markets"}, status=400)
+    result = await loop.trigger_once()
+    return web.json_response({"ok": True, "result": result})
+
+
+# ---------------------------------------------------------------------------
 # SSE handlers for long-running commands
+# ---------------------------------------------------------------------------
 
 async def handle_build_offer_stream(request: web.Request) -> web.StreamResponse:
     body = {}
@@ -579,8 +620,42 @@ async def handle_coin_combine_stream(request: web.Request) -> web.StreamResponse
 # App factory
 # ---------------------------------------------------------------------------
 
+async def _on_startup(app: web.Application) -> None:
+    """Auto-start the market loop when Sage is connected and markets are enabled."""
+    from greenfloor.adapters.sage_rpc import sage_certs_present
+    loop: MarketLoop = app["market_loop"]
+    status = loop.status()
+    if status["sage_connected"] and status["enabled_markets"] > 0:
+        loop.start()
+        logger.info(
+            "market_loop auto-started: sage_connected=True enabled_markets=%d",
+            status["enabled_markets"],
+        )
+    else:
+        reasons = []
+        if not status["sage_connected"]:
+            reasons.append("sage_not_connected")
+        if status["enabled_markets"] == 0:
+            reasons.append("no_enabled_markets")
+        logger.info("market_loop not auto-started: %s", ", ".join(reasons))
+
+
+async def _on_cleanup(app: web.Application) -> None:
+    app["market_loop"].stop()
+
+
 def create_app() -> web.Application:
+    prog, mkts = _default_config_paths()
+    market_loop = MarketLoop(
+        program_path=Path(prog),
+        markets_path=Path(mkts),
+    )
+
     app = web.Application()
+    app["market_loop"] = market_loop
+    app.on_startup.append(_on_startup)
+    app.on_cleanup.append(_on_cleanup)
+
     app.router.add_get("/", handle_index)
     app.router.add_get("/api/doctor", handle_doctor)
     app.router.add_get("/api/config-validate", handle_config_validate)
@@ -602,6 +677,10 @@ def create_app() -> web.Application:
     app.router.add_get("/api/prices", handle_prices)
     app.router.add_get("/api/markets-list", handle_markets_list)
     app.router.add_post("/api/markets-write", handle_markets_write)
+    app.router.add_get("/api/market-loop/status", handle_market_loop_status)
+    app.router.add_post("/api/market-loop/start", handle_market_loop_start)
+    app.router.add_post("/api/market-loop/stop", handle_market_loop_stop)
+    app.router.add_post("/api/market-loop/trigger", handle_market_loop_trigger)
     return app
 
 
