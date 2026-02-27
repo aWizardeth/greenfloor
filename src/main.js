@@ -440,13 +440,22 @@ pages.dashboard = async function (content) {
   const loopBtns = el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px' })
 
   if (!loop.running) {
-    const startReason = !loop.sage_connected ? 'Sage certs not found' : loop.enabled_markets === 0 ? 'No enabled markets' : ''
     const startBtn = el('button', {
       class: 'btn',
-      disabled: !loop.can_start,
-      title: startReason,
       onclick: async () => {
         startBtn.disabled = true; startBtn.textContent = 'Starting…'
+        // Re-fetch status live so we reflect any market toggle that happened after page load
+        const liveStatus = await api('/api/market-loop/status').catch(() => null)
+        if (liveStatus && !liveStatus.sage_connected) {
+          alert('Cannot start: Sage wallet certs not found. Enable the RPC server in Sage Settings → RPC.')
+          startBtn.disabled = false; startBtn.textContent = '▶ Start Loop'
+          return
+        }
+        if (liveStatus && liveStatus.enabled_markets === 0) {
+          alert('Cannot start: no enabled markets. Enable at least one market first.')
+          startBtn.disabled = false; startBtn.textContent = '▶ Start Loop'
+          return
+        }
         const r = await api('/api/market-loop/start', { method: 'POST' })
         if (r.ok) pages.dashboard(content)
         else { alert('Cannot start loop: ' + (r.error || JSON.stringify(r))); pages.dashboard(content) }
@@ -467,7 +476,6 @@ pages.dashboard = async function (content) {
 
   const trigBtn = el('button', {
     class: 'btn btn-secondary',
-    disabled: !loop.can_start,
     onclick: async () => {
       trigBtn.disabled = true; trigBtn.textContent = 'Running…'
       const r = await api('/api/market-loop/trigger', { method: 'POST' })
