@@ -433,6 +433,85 @@ async def handle_sage_rpc_cats(request: web.Request) -> web.Response:
         return web.json_response({"ok": False, "error": str(exc)}, status=500)
 
 
+async def handle_sage_rpc_offers(request: web.Request) -> web.Response:
+    """Return active (and optionally completed) offers from the Sage wallet."""
+    from greenfloor.adapters.sage_rpc import SageRpcError
+    try:
+        limit = int(request.rel_url.query.get("limit", "200"))
+        offset = int(request.rel_url.query.get("offset", "0"))
+        include_completed = request.rel_url.query.get("include_completed", "false").lower() == "true"
+        client = _build_sage_client()
+        async with client:
+            result = await client.get_offers(
+                limit=limit, offset=offset, include_completed=include_completed
+            )
+        offers = result.get("offers", [])
+        return web.json_response({"ok": True, "offers": offers, "total": len(offers)})
+    except SageRpcError as exc:
+        return web.json_response({"ok": False, **exc.to_dict()}, status=exc.status or 500)
+    except Exception as exc:
+        return web.json_response({"ok": False, "error": str(exc)}, status=500)
+
+
+async def handle_sage_rpc_cancel_offer(request: web.Request) -> web.Response:
+    """Cancel a single Sage wallet offer by offer_id."""
+    from greenfloor.adapters.sage_rpc import SageRpcError
+    try:
+        body = await request.json()
+        offer_id = str(body.get("offer_id", "")).strip()
+        fee = int(body.get("fee", 0))
+        if not offer_id:
+            return web.json_response({"ok": False, "error": "offer_id required"}, status=400)
+        client = _build_sage_client()
+        async with client:
+            result = await client.cancel_offer(offer_id=offer_id, fee=fee)
+        return web.json_response({"ok": True, **result})
+    except SageRpcError as exc:
+        return web.json_response({"ok": False, **exc.to_dict()}, status=exc.status or 500)
+    except Exception as exc:
+        return web.json_response({"ok": False, "error": str(exc)}, status=500)
+
+
+async def handle_sage_rpc_cancel_all_offers(request: web.Request) -> web.Response:
+    """Cancel all active (non-completed) offers in the Sage wallet."""
+    from greenfloor.adapters.sage_rpc import SageRpcError
+    try:
+        body: dict = {}
+        try:
+            body = await request.json()
+        except Exception:
+            pass
+        fee = int(body.get("fee", 0))
+        client = _build_sage_client()
+        async with client:
+            offers_result = await client.get_offers(limit=500, offset=0, include_completed=False)
+            offers = offers_result.get("offers", [])
+            results = []
+            for offer in offers:
+                offer_id = str(offer.get("offer_id", "")).strip()
+                if not offer_id:
+                    continue
+                try:
+                    r = await client.cancel_offer(offer_id=offer_id, fee=fee)
+                    results.append({"offer_id": offer_id, "ok": True, **r})
+                except SageRpcError as exc:
+                    results.append({"offer_id": offer_id, "ok": False, "error": exc.body})
+                except Exception as exc:
+                    results.append({"offer_id": offer_id, "ok": False, "error": str(exc)})
+        cancelled = sum(1 for r in results if r.get("ok"))
+        return web.json_response({
+            "ok": True,
+            "total": len(results),
+            "cancelled": cancelled,
+            "failed": len(results) - cancelled,
+            "results": results,
+        })
+    except SageRpcError as exc:
+        return web.json_response({"ok": False, **exc.to_dict()}, status=exc.status or 500)
+    except Exception as exc:
+        return web.json_response({"ok": False, "error": str(exc)}, status=500)
+
+
 async def handle_prices(request: web.Request) -> web.Response:
     """Return XCH/USD price (coincodex) and CAT/XCH tickers (Dexie v3)."""
     import aiohttp
@@ -697,6 +776,9 @@ def create_app() -> web.Application:
     app.router.add_post("/api/sage-rpc/call", handle_sage_rpc_call)
     app.router.add_get("/api/sage-rpc/coins", handle_sage_rpc_coins)
     app.router.add_get("/api/sage-rpc/cats", handle_sage_rpc_cats)
+    app.router.add_get("/api/sage-rpc/offers", handle_sage_rpc_offers)
+    app.router.add_post("/api/sage-rpc/offers/cancel", handle_sage_rpc_cancel_offer)
+    app.router.add_post("/api/sage-rpc/offers/cancel-all", handle_sage_rpc_cancel_all_offers)
     app.router.add_get("/api/prices", handle_prices)
     app.router.add_get("/api/markets-list", handle_markets_list)
     app.router.add_post("/api/markets-write", handle_markets_write)

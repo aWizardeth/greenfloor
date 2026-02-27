@@ -219,6 +219,38 @@ class SageRpcClient:
     async def view_offer(self, offer: str) -> dict[str, Any]:
         return await self.call("view_offer", {"offer": offer})
 
+    async def get_offers(
+        self,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        include_completed: bool = False,
+    ) -> dict[str, Any]:
+        """Return offers held by the active key.
+
+        Each offer record typically contains ``offer_id``, ``status``,
+        ``offer`` (the offer1... string), and ``creation_spend_id``.
+        Active / pending offers have ``status`` ``"pending"`` or ``"active"``;
+        taken/expired offers have ``"completed"`` or ``"failed"``.
+        """
+        return await self.call(
+            "get_offers",
+            {"limit": limit, "offset": offset, "include_completed": include_completed},
+        )
+
+    async def cancel_offer(
+        self,
+        *,
+        offer_id: str,
+        fee: int = 0,
+    ) -> dict[str, Any]:
+        """Cancel a live offer by its offer ID.
+
+        Pass ``fee`` in mojos (default 0).  The wallet will broadcast an
+        on-chain cancellation spend consuming the coins locked in the offer.
+        """
+        return await self.call("cancel_offer", {"offer_id": offer_id, "fee": fee})
+
     async def bulk_send_cat(
         self,
         *,

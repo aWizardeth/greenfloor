@@ -711,14 +711,39 @@ pages.offers = async function (content) {
   content.innerHTML = ''
   const topbar = document.getElementById('topbar-actions')
   topbar.innerHTML = ''
-  const btnRefresh = el('button', { class: 'btn btn-secondary', onclick: () => loadOffers() }, '↻ Refresh')
+  const btnRefresh = el('button', {
+    class: 'btn btn-secondary',
+    onclick: () => { loadOffers(); loadSageOffers() },
+  }, '↻ Refresh')
   const btnReconcile = el('button', { class: 'btn btn-primary', onclick: () => runReconcile() }, '⚡ Reconcile')
-  topbar.appendChild(el('div', { class: 'btn-group' }, btnRefresh, btnReconcile))
+  const btnCancelAll = el('button', {
+    class: 'btn',
+    style: 'background:var(--red,#c0392b);border-color:var(--red,#c0392b)',
+    onclick: async () => {
+      if (!confirm('Cancel ALL active offers in your Sage wallet?')) return
+      btnCancelAll.disabled = true; btnCancelAll.textContent = 'Cancelling…'
+      const r = await api('/api/sage-rpc/offers/cancel-all', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      })
+      btnCancelAll.disabled = false; btnCancelAll.textContent = '✕ Cancel All'
+      if (r.ok) {
+        alert(`Cancelled ${r.cancelled} of ${r.total} offers.${r.failed ? ` ${r.failed} failed.` : ''}`)
+        loadSageOffers()
+      } else {
+        alert('Cancel all failed: ' + (r.error || JSON.stringify(r)))
+      }
+    },
+  }, '✕ Cancel All')
+  topbar.appendChild(el('div', { class: 'btn-group' }, btnRefresh, btnReconcile, btnCancelAll))
 
   const statusCard = el('div', { class: 'card' })
+  const sageCard = el('div', { class: 'card' })
   const reconCard = el('div', { class: 'card' })
   reconCard.style.display = 'none'
   content.appendChild(statusCard)
+  content.appendChild(sageCard)
   content.appendChild(reconCard)
 
   async function loadOffers() {
@@ -786,6 +811,97 @@ pages.offers = async function (content) {
     statusCard.appendChild(wrap)
   }
 
+  async function loadSageOffers() {
+    sageCard.innerHTML =
+      '<div class="card-title">Sage Wallet Offers</div><div class="loading-row"><div class="spinner"></div> Loading…</div>'
+    const res = await api('/api/sage-rpc/offers?limit=200')
+    sageCard.innerHTML = '<div class="card-title">Sage Wallet Offers</div>'
+    if (!res.ok) {
+      sageCard.appendChild(el('div', { class: 'empty text-muted' },
+        res.error || 'Could not reach Sage wallet (is it running?)'))
+      return
+    }
+    const offers = res.offers || []
+    if (!offers.length) {
+      sageCard.appendChild(el('div', { class: 'empty' }, 'No active offers in Sage wallet.'))
+      return
+    }
+    const active = offers.filter(o => !['completed', 'failed', 'expired'].includes(String(o.status || '').toLowerCase()))
+    const countGrid = el('div', { class: 'grid-3 mb-16' })
+    ;[['Total', offers.length], ['Active', active.length], ['Completed', offers.length - active.length]].forEach(([l, v]) => {
+      const s = el('div', { class: 'stat' }); s.appendChild(el('div', { class: 'stat-label' }, l))
+      const sv = el('div', { class: 'stat-value' }); sv.textContent = v; s.appendChild(sv)
+      countGrid.appendChild(s)
+    })
+    sageCard.appendChild(countGrid)
+
+    const wrap = el('div', { class: 'tbl-wrap' })
+    const tbl = el('table')
+    tbl.appendChild(el('thead', {}, el('tr', {},
+      ...['Offer ID', 'Status', 'Offered', 'Requested', ''].map(h => { const th = el('th'); th.textContent = h; return th })
+    )))
+    const tbody = el('tbody')
+    for (const o of offers) {
+      const status = String(o.status || 'unknown').toLowerCase()
+      const isActive = !['completed', 'failed', 'expired'].includes(status)
+      const stateColor = status === 'active' || status === 'pending' ? 'green' : status === 'completed' ? 'blue' : 'muted'
+      const row = el('tr')
+      function td2(child) {
+        const t = el('td')
+        if (typeof child === 'string') t.textContent = child
+        else if (child) t.appendChild(child)
+        return t
+      }
+      const idEl = el('span', { style: 'font-family:var(--font-mono);font-size:10px' })
+      idEl.textContent = String(o.offer_id || '—').slice(0, 20) + (String(o.offer_id || '').length > 20 ? '…' : '')
+      idEl.title = o.offer_id || ''
+      row.appendChild(td2(idEl))
+      row.appendChild(el('td', {}, badge(status, stateColor)))
+      // Offered / requested asset summaries
+      const ofAssets = (o.offered_assets || []).map(a => {
+        const id = a.asset_id === null ? 'XCH' : String(a.asset_id || '').slice(0, 8) + '…'
+        const amt = a.amount?.mojos !== undefined ? a.amount.mojos : (a.amount || 0)
+        return `${id} (${amt})`
+      }).join(', ') || '—'
+      const reqAssets = (o.requested_assets || []).map(a => {
+        const id = a.asset_id === null ? 'XCH' : String(a.asset_id || '').slice(0, 8) + '…'
+        const amt = a.amount?.mojos !== undefined ? a.amount.mojos : (a.amount || 0)
+        return `${id} (${amt})`
+      }).join(', ') || '—'
+      row.appendChild(td2(ofAssets))
+      row.appendChild(td2(reqAssets))
+      // Cancel button cell
+      const actionTd = el('td')
+      if (isActive) {
+        const cancelBtn = el('button', {
+          class: 'btn btn-secondary',
+          style: 'font-size:11px;padding:2px 8px;color:var(--red)',
+          onclick: async () => {
+            cancelBtn.disabled = true; cancelBtn.textContent = '…'
+            const r = await api('/api/sage-rpc/offers/cancel', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ offer_id: o.offer_id }),
+            })
+            if (r.ok) {
+              row.style.opacity = '0.4'
+              cancelBtn.textContent = '✓'
+            } else {
+              cancelBtn.disabled = false; cancelBtn.textContent = '✕ Cancel'
+              alert('Cancel failed: ' + (r.error || JSON.stringify(r)))
+            }
+          },
+        }, '✕ Cancel')
+        actionTd.appendChild(cancelBtn)
+      }
+      row.appendChild(actionTd)
+      tbody.appendChild(row)
+    }
+    tbl.appendChild(tbody)
+    wrap.appendChild(tbl)
+    sageCard.appendChild(wrap)
+  }
+
   async function runReconcile() {
     btnReconcile.disabled = true
     reconCard.style.display = ''
@@ -804,6 +920,7 @@ pages.offers = async function (content) {
   }
 
   loadOffers()
+  loadSageOffers()
 }
 
 // ── Coins ──────────────────────────────────────────────────────────────────
