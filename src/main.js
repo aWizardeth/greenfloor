@@ -6,6 +6,11 @@ function el(tag, attrs = {}, ...children) {
   for (const [k, v] of Object.entries(attrs)) {
     if (k === 'class') e.className = v
     else if (k.startsWith('on')) e.addEventListener(k.slice(2), v)
+    else if (k === 'disabled' || k === 'checked' || k === 'selected' || k === 'open') {
+      // Boolean DOM properties: set as property, not attribute.
+      // setAttribute('disabled', false) still adds the attribute and disables the element.
+      e[k] = Boolean(v)
+    }
     else e.setAttribute(k, v)
   }
   for (const c of children) {
@@ -242,7 +247,7 @@ pages.dashboard = async function (content) {
     // Keys switcher
     const keysRes = await api('/api/sage-rpc/keys')
     if (keysRes.ok && (keysRes.keys || []).length > 0) {
-      const keyToggle = el('details', { style: 'margin-top:12px', open: true })
+      const keyToggle = el('details', { style: 'margin-top:12px' })
       keyToggle.appendChild(el('summary', {
         style: 'cursor:pointer;font-size:12px;color:var(--muted);user-select:none'
       }, `${keysRes.keys.length} wallet keys — click to switch`))
