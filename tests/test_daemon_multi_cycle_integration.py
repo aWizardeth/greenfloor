@@ -15,7 +15,7 @@ def _write_program(path: Path, home_dir: Path) -> None:
             [
                 "app:",
                 '  network: "mainnet"',
-                f'  home_dir: "{str(home_dir)}"',
+                f'  home_dir: "{home_dir.as_posix()}"',
                 "runtime:",
                 "  loop_interval_seconds: 30",
                 "  dry_run: false",

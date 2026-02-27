@@ -103,7 +103,7 @@ chain_signals:
     mode: "websocket"
     source: "coinset"
     # Coinset websocket endpoint; when empty, defaults by network profile.
-    # mainnet: wss://coinset.org/ws
+    # mainnet: wss://api.coinset.org/ws
     # testnet11: wss://testnet11.api.coinset.org/ws
     websocket_url: ""
     websocket_reconnect_interval_seconds: 30

@@ -23,6 +23,12 @@ def test_doctor_fails_when_enabled_market_key_missing_from_registry(tmp_path: Pa
     shutil.copyfile("config/program.yaml", program)
     shutil.copyfile("config/markets.yaml", markets)
 
+    # Enable the first market so the key-registry check actually runs.
+    markets_data = yaml.safe_load(markets.read_text(encoding="utf-8"))
+    if markets_data.get("markets"):
+        markets_data["markets"][0]["enabled"] = True
+    markets.write_text(yaml.safe_dump(markets_data, sort_keys=False), encoding="utf-8")
+
     program_data = yaml.safe_load(program.read_text(encoding="utf-8"))
     keys = dict(program_data.get("keys", {}))
     keys["registry"] = [

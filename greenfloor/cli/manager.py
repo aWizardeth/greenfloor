@@ -13,6 +13,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -50,6 +51,13 @@ from greenfloor.storage.sqlite import SqliteStore
 
 _TEST_PHASE_OFFER_EXPIRY_MINUTES = 5
 _MANAGER_SERVICE_NAME = "manager"
+_TESTNET_NETWORKS: frozenset[str] = frozenset({"testnet", "testnet11"})
+
+
+def _is_testnet(network: str) -> bool:
+    return network.strip().lower() in _TESTNET_NETWORKS
+
+
 _manager_file_logger_initialized = False
 _manager_logger = logging.getLogger("greenfloor.manager")
 
@@ -375,6 +383,12 @@ def _local_catalog_label_hints_for_asset_id(*, canonical_asset_id: str) -> list[
                 value = str(row.get(key, "")).strip()
                 if value:
                     hints.append(value)
+            aliases = row.get("aliases")
+            if isinstance(aliases, list):
+                for alias in aliases:
+                    value = str(alias).strip()
+                    if value:
+                        hints.append(value)
     assets_rows = markets_payload.get("assets") if isinstance(markets_payload, dict) else None
     if isinstance(assets_rows, list):
         for row in assets_rows:
@@ -403,106 +417,14 @@ def _local_catalog_label_hints_for_asset_id(*, canonical_asset_id: str) -> list[
 
 def _dexie_lookup_token_for_cat_id(*, canonical_cat_id_hex: str, network: str) -> dict | None:
     base_url = _resolve_dexie_base_url(network, None)
-    target = canonical_cat_id_hex.strip().lower()
-    if not target:
-        return None
-
-    def _fetch_json(url: str) -> object | None:
-        req = urllib.request.Request(
-            url,
-            method="GET",
-            headers={
-                "Accept": "application/json",
-                "User-Agent": "greenfloor/0.1",
-            },
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=20) as resp:
-                return json.loads(resp.read().decode("utf-8"))
-        except Exception:
-            return None
-
-    def _row_matches_target(row: dict, *, include_ticker_split: bool = False) -> bool:
-        candidates = {
-            str(row.get("assetId", "")).strip().lower(),
-            str(row.get("asset_id", "")).strip().lower(),
-            str(row.get("id", "")).strip().lower(),
-            str(row.get("tokenId", "")).strip().lower(),
-            str(row.get("token_id", "")).strip().lower(),
-            str(row.get("base_currency", "")).strip().lower(),
-            str(row.get("target_currency", "")).strip().lower(),
-        }
-        ticker_id = str(row.get("ticker_id", "")).strip().lower()
-        if ticker_id:
-            candidates.add(ticker_id)
-            if include_ticker_split and "_" in ticker_id:
-                base, quote = ticker_id.split("_", 1)
-                candidates.add(base)
-                candidates.add(quote)
-        return target in candidates
-
-    # Primary: swap token metadata.
-    tokens_payload = _fetch_json(f"{base_url}/v1/swap/tokens")
-    token_rows: list[dict] = []
-    if isinstance(tokens_payload, list):
-        token_rows = [row for row in tokens_payload if isinstance(row, dict)]
-    elif isinstance(tokens_payload, dict):
-        tokens = tokens_payload.get("tokens")
-        if isinstance(tokens, list):
-            token_rows = [row for row in tokens if isinstance(row, dict)]
-    for row in token_rows:
-        if _row_matches_target(row):
-            return row
-
-    # Fallback: v3 ticker metadata often includes CAT tails not present in
-    # swap token listing (for example CARBON22 on some Dexie snapshots).
-    tickers_payload = _fetch_json(f"{base_url}/v3/prices/tickers")
-    ticker_rows: list[dict] = []
-    if isinstance(tickers_payload, list):
-        ticker_rows = [row for row in tickers_payload if isinstance(row, dict)]
-    elif isinstance(tickers_payload, dict):
-        tickers = tickers_payload.get("tickers")
-        if isinstance(tickers, list):
-            ticker_rows = [row for row in tickers if isinstance(row, dict)]
-    for row in ticker_rows:
-        if _row_matches_target(row, include_ticker_split=True):
-            return row
-    return None
+    adapter = DexieAdapter(base_url)
+    return adapter.lookup_token_by_cat_id(canonical_cat_id_hex)
 
 
 def _dexie_lookup_token_for_symbol(*, asset_ref: str, network: str) -> dict | None:
     base_url = _resolve_dexie_base_url(network, None)
-    req = urllib.request.Request(
-        f"{base_url}/v1/swap/tokens",
-        method="GET",
-        headers={
-            "Accept": "application/json",
-            "User-Agent": "greenfloor/0.1",
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
-    except Exception:
-        return None
-
-    rows: list[dict] = []
-    if isinstance(payload, list):
-        rows = [row for row in payload if isinstance(row, dict)]
-    elif isinstance(payload, dict):
-        tokens = payload.get("tokens")
-        if isinstance(tokens, list):
-            rows = [row for row in tokens if isinstance(row, dict)]
-
-    target = asset_ref.strip()
-    for row in rows:
-        if _labels_match(str(row.get("code", "")), target):
-            return row
-        if _labels_match(str(row.get("name", "")), target):
-            return row
-        if _labels_match(str(row.get("id", "")), target):
-            return row
-    return None
+    adapter = DexieAdapter(base_url)
+    return adapter.lookup_token_by_symbol(asset_ref, label_matcher=_labels_match)
 
 
 def _normalize_hex_asset_id(asset_id: str) -> str:
@@ -896,6 +818,7 @@ def _resolve_cloud_wallet_asset_id(
     wallet: CloudWalletAdapter,
     canonical_asset_id: str,
     symbol_hint: str | None = None,
+    global_id_hint: str | None = None,
 ) -> str:
     raw = canonical_asset_id.strip()
     if not raw:
@@ -951,6 +874,9 @@ query resolveWalletAssets($walletId: ID!) {
             )
 
     if _canonical_is_xch(raw):
+        hinted = str(global_id_hint or "").strip()
+        if hinted and hinted in set(crypto_asset_ids):
+            return hinted
         if len(crypto_asset_ids) == 1:
             return crypto_asset_ids[0]
         if len(crypto_asset_ids) == 0:
@@ -961,6 +887,11 @@ query resolveWalletAssets($walletId: ID!) {
         raise RuntimeError(
             f"cloud_wallet_asset_resolution_failed:no_wallet_cat_asset_candidates_for:{raw}"
         )
+    hinted = str(global_id_hint or "").strip()
+    if hinted:
+        cat_asset_ids = {str(row.get("asset_id", "")).strip() for row in cat_assets}
+        if hinted in cat_asset_ids:
+            return hinted
 
     canonical_hex = raw.lower()
     preferred_labels: list[str] = []
@@ -1033,16 +964,20 @@ def _resolve_cloud_wallet_offer_asset_ids(
     quote_asset_id: str,
     base_symbol_hint: str | None = None,
     quote_symbol_hint: str | None = None,
+    base_global_id_hint: str | None = None,
+    quote_global_id_hint: str | None = None,
 ) -> tuple[str, str]:
     resolved_base = _resolve_cloud_wallet_asset_id(
         wallet=wallet,
         canonical_asset_id=base_asset_id,
         symbol_hint=(base_symbol_hint or "").strip() or str(base_asset_id).strip(),
+        global_id_hint=(base_global_id_hint or "").strip() or None,
     )
     resolved_quote = _resolve_cloud_wallet_asset_id(
         wallet=wallet,
         canonical_asset_id=quote_asset_id,
         symbol_hint=(quote_symbol_hint or "").strip() or str(quote_asset_id).strip(),
+        global_id_hint=(quote_global_id_hint or "").strip() or None,
     )
     if (
         resolved_base == resolved_quote
@@ -1055,6 +990,34 @@ def _resolve_cloud_wallet_offer_asset_ids(
             "cloud_wallet_asset_resolution_failed:resolved_assets_collide_for_non_xch_pair"
         )
     return resolved_base, resolved_quote
+
+
+def _recent_market_resolved_asset_id_hints(
+    *,
+    program_home_dir: str,
+    market_id: str,
+) -> tuple[str | None, str | None]:
+    db_path = (Path(program_home_dir).expanduser() / "db" / "greenfloor.sqlite").resolve()
+    if not db_path.exists():
+        return None, None
+    store = SqliteStore(db_path)
+    try:
+        events = store.list_recent_audit_events(
+            event_types=["strategy_offer_execution"],
+            market_id=market_id,
+            limit=200,
+        )
+    finally:
+        store.close()
+    for event in events:
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        base_hint = str(payload.get("resolved_base_asset_id", "")).strip()
+        quote_hint = str(payload.get("resolved_quote_asset_id", "")).strip()
+        if base_hint.startswith("Asset_") and quote_hint.startswith("Asset_"):
+            return base_hint, quote_hint
+    return None, None
 
 
 def _parse_iso8601(value: str) -> dt.datetime | None:
@@ -1163,11 +1126,7 @@ def _call_with_moderate_retry(
 
 
 def _coinset_coin_url(*, coin_name: str, network: str = "mainnet") -> str:
-    base = (
-        "https://testnet11.coinset.org"
-        if network.strip().lower() in {"testnet", "testnet11"}
-        else "https://coinset.org"
-    )
+    base = "https://testnet11.coinset.org" if _is_testnet(network) else "https://coinset.org"
     return f"{base}/coin/{coin_name.strip()}"
 
 
@@ -1317,8 +1276,7 @@ def _coinset_base_url(*, network: str) -> str:
     base = os.getenv("GREENFLOOR_COINSET_BASE_URL", "").strip()
     if not base:
         return ""
-    network_l = network.strip().lower()
-    if network_l in {"testnet", "testnet11"}:
+    if _is_testnet(network):
         allow_mainnet = os.getenv("GREENFLOOR_ALLOW_MAINNET_COINSET_FOR_TESTNET11", "").strip()
         if (
             "coinset.org" in base
@@ -1331,7 +1289,7 @@ def _coinset_base_url(*, network: str) -> str:
 
 def _coinset_adapter(*, network: str) -> CoinsetAdapter:
     base_url = _coinset_base_url(network=network)
-    require_testnet11 = network.strip().lower() in {"testnet", "testnet11"}
+    require_testnet11 = _is_testnet(network)
     try:
         return CoinsetAdapter(
             base_url or None, network=network, require_testnet11=require_testnet11
@@ -2186,7 +2144,7 @@ def _resolve_dexie_base_url(network: str, explicit_base_url: str | None) -> str:
     network_l = network.strip().lower()
     if network_l in {"mainnet", ""}:
         return "https://api.dexie.space"
-    if network_l in {"testnet", "testnet11"}:
+    if network_l in _TESTNET_NETWORKS:
         return "https://api-testnet.dexie.space"
     raise ValueError(f"unsupported network for dexie posting: {network}")
 
@@ -2226,7 +2184,7 @@ def _resolve_offer_publish_settings(
         raise ValueError("offer publish venue must be dexie or splash")
     if dexie_base_url and dexie_base_url.strip():
         dexie_base = dexie_base_url.strip().rstrip("/")
-    elif network.strip().lower() in {"testnet", "testnet11"}:
+    elif _is_testnet(network):
         dexie_base = _resolve_dexie_base_url(network, None)
     else:
         dexie_base = str(program.dexie_api_base).strip().rstrip("/")
@@ -2283,12 +2241,18 @@ def _build_and_post_offer_cloud_wallet(
         program.home_dir, log_level=getattr(program, "app_log_level", "INFO")
     )
     wallet = _new_cloud_wallet_adapter(program)
+    base_global_hint, quote_global_hint = _recent_market_resolved_asset_id_hints(
+        program_home_dir=str(program.home_dir),
+        market_id=str(market.market_id),
+    )
     resolved_base_asset_id, resolved_quote_asset_id = _resolve_cloud_wallet_offer_asset_ids(
         wallet=wallet,
         base_asset_id=str(market.base_asset),
         quote_asset_id=str(market.quote_asset),
         base_symbol_hint=str(getattr(market, "base_symbol", "") or ""),
         quote_symbol_hint=str(getattr(market, "quote_asset", "") or ""),
+        base_global_id_hint=base_global_hint,
+        quote_global_id_hint=quote_global_hint,
     )
     db_path = (Path(program.home_dir).expanduser() / "db" / "greenfloor.sqlite").resolve()
     store = SqliteStore(db_path)
@@ -3137,7 +3101,7 @@ def _resolve_market_for_build(
         }
         quote_match = str(market.quote_asset).strip().lower()
         quote_matches = {quote_match}
-        if network_l in {"testnet", "testnet11"}:
+        if network_l in _TESTNET_NETWORKS:
             if quote_match == "xch":
                 quote_matches.add("txch")
             elif quote_match == "txch":
@@ -3205,6 +3169,69 @@ def _coins_list(
     return 0
 
 
+@dataclass(slots=True)
+class _CoinOpSetup:
+    program: Any
+    market: Any
+    wallet: CloudWalletAdapter
+    resolved_asset_id: str
+    fee_mojos: int
+    fee_source: str
+    selected_venue: str | None
+
+
+def _coin_op_setup(
+    *,
+    program_path: Path,
+    markets_path: Path,
+    testnet_markets_path: Path | None,
+    network: str,
+    market_id: str | None,
+    pair: str | None,
+    venue: str | None,
+    canonical_asset_id_override: str | None = None,
+) -> _CoinOpSetup | None:
+    program = load_program_config(program_path)
+    selected_venue = _resolve_venue_for_coin_prep(venue_override=venue)
+    markets = load_markets_config_with_optional_overlay(
+        path=markets_path,
+        overlay_path=testnet_markets_path,
+    )
+    market = _resolve_market_for_build(
+        markets,
+        market_id=market_id,
+        pair=pair,
+        network=network,
+    )
+    wallet = _new_cloud_wallet_adapter(program)
+    canonical = canonical_asset_id_override or str(market.base_asset)
+    hint = canonical_asset_id_override or str(market.base_symbol)
+    resolved_asset_id = _resolve_cloud_wallet_asset_id(
+        wallet=wallet,
+        canonical_asset_id=canonical,
+        symbol_hint=hint,
+    )
+    fee_result = _resolve_coin_op_fee(
+        network=network,
+        minimum_fee_mojos=int(program.coin_ops_minimum_fee_mojos),
+        market=market,
+        selected_venue=selected_venue,
+        wallet=wallet,
+    )
+    if fee_result is None:
+        return None
+    fee_mojos, fee_source = fee_result
+    return _CoinOpSetup(
+        program=program,
+        market=market,
+        wallet=wallet,
+        resolved_asset_id=resolved_asset_id,
+        fee_mojos=fee_mojos,
+        fee_source=fee_source,
+        selected_venue=selected_venue,
+    )
+
+
 def _coin_split(
     *,
     program_path: Path,
@@ -3225,18 +3252,29 @@ def _coin_split(
     force_split_when_ready: bool = False,
     prompt_for_override: bool | None = None,
 ) -> int:
-    program = load_program_config(program_path)
-    selected_venue = _resolve_venue_for_coin_prep(venue_override=venue)
-    markets = load_markets_config_with_optional_overlay(
-        path=markets_path,
-        overlay_path=testnet_markets_path,
-    )
-    market = _resolve_market_for_build(
-        markets,
+    if until_ready and no_wait:
+        raise ValueError("until-ready mode requires wait mode (do not pass --no-wait)")
+    if until_ready and size_base_units is None:
+        raise ValueError("until-ready mode requires --size-base-units")
+    if max_iterations <= 0:
+        raise ValueError("max_iterations must be positive")
+    setup = _coin_op_setup(
+        program_path=program_path,
+        markets_path=markets_path,
+        testnet_markets_path=testnet_markets_path,
+        network=network,
         market_id=market_id,
         pair=pair,
-        network=network,
+        venue=venue,
     )
+    if setup is None:
+        return 2
+    market = setup.market
+    wallet = setup.wallet
+    resolved_split_asset_id = setup.resolved_asset_id
+    fee_mojos = setup.fee_mojos
+    fee_source = setup.fee_source
+    selected_venue = setup.selected_venue
     denomination_target = None
     if size_base_units is not None and int(size_base_units) > 0:
         entry = _resolve_market_denomination_entry(market, size_base_units=int(size_base_units))
@@ -3263,28 +3301,6 @@ def _coin_split(
         raise ValueError("amount_per_coin must be positive")
     if number_of_coins <= 0:
         raise ValueError("number_of_coins must be positive")
-    if until_ready and no_wait:
-        raise ValueError("until-ready mode requires wait mode (do not pass --no-wait)")
-    if until_ready and denomination_target is None:
-        raise ValueError("until-ready mode requires --size-base-units")
-    if max_iterations <= 0:
-        raise ValueError("max_iterations must be positive")
-    wallet = _new_cloud_wallet_adapter(program)
-    resolved_split_asset_id = _resolve_cloud_wallet_asset_id(
-        wallet=wallet,
-        canonical_asset_id=str(market.base_asset),
-        symbol_hint=str(market.base_symbol),
-    )
-    fee_result = _resolve_coin_op_fee(
-        network=network,
-        minimum_fee_mojos=int(program.coin_ops_minimum_fee_mojos),
-        market=market,
-        selected_venue=selected_venue,
-        wallet=wallet,
-    )
-    if fee_result is None:
-        return 2
-    fee_mojos, fee_source = fee_result
 
     operations: list[dict[str, object]] = []
     final_readiness: dict[str, int | bool | str] | None = None
@@ -3481,20 +3497,32 @@ def _coin_combine(
     until_ready: bool = False,
     max_iterations: int = 3,
 ) -> int:
-    program = load_program_config(program_path)
-    selected_venue = _resolve_venue_for_coin_prep(venue_override=venue)
-    markets = load_markets_config_with_optional_overlay(
-        path=markets_path,
-        overlay_path=testnet_markets_path,
-    )
-    market = _resolve_market_for_build(
-        markets,
+    if until_ready and no_wait:
+        raise ValueError("until-ready mode requires wait mode (do not pass --no-wait)")
+    if until_ready and size_base_units is None:
+        raise ValueError("until-ready mode requires --size-base-units")
+    if max_iterations <= 0:
+        raise ValueError("max_iterations must be positive")
+    requested_asset_id = asset_id.strip() if asset_id else None
+    setup = _coin_op_setup(
+        program_path=program_path,
+        markets_path=markets_path,
+        testnet_markets_path=testnet_markets_path,
+        network=network,
         market_id=market_id,
         pair=pair,
-        network=network,
+        venue=venue,
+        canonical_asset_id_override=requested_asset_id,
     )
+    if setup is None:
+        return 2
+    market = setup.market
+    wallet = setup.wallet
+    resolved_asset_id = setup.resolved_asset_id
+    fee_mojos = setup.fee_mojos
+    fee_source = setup.fee_source
+    selected_venue = setup.selected_venue
     denomination_target = None
-    requested_asset_id = asset_id.strip() if asset_id else str(market.base_asset).strip()
     if size_base_units is not None and int(size_base_units) > 0:
         entry = _resolve_market_denomination_entry(market, size_base_units=int(size_base_units))
         threshold = max(
@@ -3515,28 +3543,6 @@ def _coin_combine(
         }
     if number_of_coins <= 1:
         raise ValueError("number_of_coins must be > 1")
-    if until_ready and no_wait:
-        raise ValueError("until-ready mode requires wait mode (do not pass --no-wait)")
-    if until_ready and denomination_target is None:
-        raise ValueError("until-ready mode requires --size-base-units")
-    if max_iterations <= 0:
-        raise ValueError("max_iterations must be positive")
-    wallet = _new_cloud_wallet_adapter(program)
-    resolved_asset_id = _resolve_cloud_wallet_asset_id(
-        wallet=wallet,
-        canonical_asset_id=requested_asset_id,
-        symbol_hint=str(market.base_symbol).strip() if not asset_id else requested_asset_id,
-    )
-    fee_result = _resolve_coin_op_fee(
-        network=network,
-        minimum_fee_mojos=int(program.coin_ops_minimum_fee_mojos),
-        market=market,
-        selected_venue=selected_venue,
-        wallet=wallet,
-    )
-    if fee_result is None:
-        return 2
-    fee_mojos, fee_source = fee_result
 
     operations: list[dict[str, object]] = []
     final_readiness: dict[str, int | bool | str] | None = None
@@ -3626,7 +3632,7 @@ def _coin_combine(
                     fee_mojos=fee_mojos,
                     fee_source=fee_source,
                 ),
-                "asset_id": requested_asset_id,
+                "asset_id": requested_asset_id or str(market.base_asset).strip(),
                 "resolved_asset_id": resolved_asset_id,
                 "number_of_coins": number_of_coins,
             }

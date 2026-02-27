@@ -211,8 +211,11 @@ class WalletAdapter:
         plan: CoinOpPlan,
     ) -> CoinOpExecutionItem:
         try:
+            # shlex.split POSIX mode treats '\' as an escape, mangling Windows paths.
+            # Use posix=False on Windows so backslashes are kept literally.
+            _posix = os.name != "nt"
             completed = subprocess.run(
-                shlex.split(cmd_raw),
+                shlex.split(cmd_raw, posix=_posix),
                 input=json.dumps(payload),
                 capture_output=True,
                 check=False,
