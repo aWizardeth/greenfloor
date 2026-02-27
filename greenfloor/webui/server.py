@@ -638,7 +638,7 @@ async def _on_startup(app: web.Application) -> None:
     daemon and webui both start on the right wallet without re-logging in on
     every RPC session.
     """
-    from greenfloor.adapters.sage_rpc import SageRpcError, configure_sage_fingerprint, sage_certs_present
+    from greenfloor.adapters.sage_rpc import SageRpcError, configure_sage_fingerprint
     # --- one-time fingerprint login at server start ---
     cfg = _load_sage_rpc_cfg()
     fp_raw = cfg.get("fingerprint")
@@ -659,22 +659,8 @@ async def _on_startup(app: web.Application) -> None:
             logger.info("sage_fingerprint_login_ok fingerprint=%d", startup_fp)
         except Exception as exc:
             logger.warning("sage_fingerprint_login_failed fingerprint=%d error=%s", startup_fp, exc)
-    # --- market loop auto-start ---
-    loop: MarketLoop = app["market_loop"]
-    status = loop.status()
-    if status["sage_connected"] and status["enabled_markets"] > 0:
-        loop.start()
-        logger.info(
-            "market_loop auto-started: sage_connected=True enabled_markets=%d",
-            status["enabled_markets"],
-        )
-    else:
-        reasons = []
-        if not status["sage_connected"]:
-            reasons.append("sage_not_connected")
-        if status["enabled_markets"] == 0:
-            reasons.append("no_enabled_markets")
-        logger.info("market_loop not auto-started: %s", ", ".join(reasons))
+    # --- market loop: never auto-start on server startup ---
+    logger.info("market_loop not auto-started: manual start required")
 
 
 async def _on_cleanup(app: web.Application) -> None:
