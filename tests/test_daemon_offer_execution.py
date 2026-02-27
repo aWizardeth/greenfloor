@@ -31,7 +31,14 @@ class _FakeStore:
         self.offer_states: list[dict] = []
 
     def upsert_offer_state(
-        self, *, offer_id: str, market_id: str, state: str, last_seen_status: int | None
+        self,
+        *,
+        offer_id: str,
+        market_id: str,
+        state: str,
+        last_seen_status: int | None,
+        direction: str | None = None,
+        size_base_units: int | None = None,
     ) -> None:
         self.offer_states.append(
             {
@@ -39,6 +46,8 @@ class _FakeStore:
                 "market_id": market_id,
                 "state": state,
                 "last_seen_status": last_seen_status,
+                "direction": direction,
+                "size_base_units": size_base_units,
             }
         )
 
@@ -308,7 +317,7 @@ def test_build_offer_for_action_direct_builder_call(monkeypatch) -> None:
     assert built["offer"] == "offer1direct-10"
     assert captured["payload"]["quote_price_quote_per_base"] == 0.5
     assert captured["payload"]["base_unit_mojo_multiplier"] == 1000
-    assert captured["payload"]["quote_unit_mojo_multiplier"] == 1000
+    assert captured["payload"]["quote_unit_mojo_multiplier"] == 1_000_000_000_000
     assert captured["payload"]["key_id"] == "key-main-1"
     assert captured["payload"]["network"] == "mainnet"
     assert captured["payload"]["keyring_yaml_path"] == "/tmp/keyring.yaml"

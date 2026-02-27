@@ -21,6 +21,25 @@ import aiohttp
 
 
 # ---------------------------------------------------------------------------
+# Module-level fingerprint lock
+# ---------------------------------------------------------------------------
+
+_default_fingerprint: int | None = None
+
+
+def configure_sage_fingerprint(fingerprint: int | None) -> None:
+    """Store the configured fingerprint as the module-level default.
+
+    This is called once at server startup.  It does NOT call login(); the
+    actual Sage login RPC is issued separately (once at startup via
+    _on_startup, and on demand via the webui login button).  Switching
+    wallets only happens when explicitly requested -- not on every session.
+    """
+    global _default_fingerprint
+    _default_fingerprint = fingerprint
+
+
+# ---------------------------------------------------------------------------
 # Path helpers
 # ---------------------------------------------------------------------------
 
@@ -69,11 +88,13 @@ class SageRpcClient:
         key_path: str | Path,
         port: int = 9257,
         host: str = "127.0.0.1",
+        fingerprint: int | None = None,
     ) -> None:
         self._cert_path = Path(cert_path)
         self._key_path = Path(key_path)
         self._base_url = f"https://{host}:{port}"
         self._session: aiohttp.ClientSession | None = None
+        self._fingerprint = fingerprint
 
     # ------------------------------------------------------------------
     # Context-manager helpers
@@ -264,15 +285,22 @@ def resolve_sage_client(
     cert_path: str | None = None,
     key_path: str | None = None,
     host: str = "127.0.0.1",
+    fingerprint: int | None = None,
 ) -> SageRpcClient:
     """Build a ``SageRpcClient`` from explicit paths or auto-detected defaults.
+
+    If *fingerprint* is not passed explicitly, the module-level default set by
+    ``configure_sage_fingerprint()`` is used.  When a fingerprint is active the
+    client calls ``login(fingerprint)`` on ``__aenter__`` so every session is
+    locked to the correct wallet regardless of what is active in the Sage UI.
 
     Call ``await client.close()`` when finished, or use as an async context
     manager.
     """
+    fp = fingerprint if fingerprint is not None else _default_fingerprint
     cp = Path(cert_path) if cert_path else _default_cert_path()
     kp = Path(key_path) if key_path else _default_key_path()
-    return SageRpcClient(cert_path=cp, key_path=kp, port=port, host=host)
+    return SageRpcClient(cert_path=cp, key_path=kp, port=port, host=host, fingerprint=fp)
 
 
 def sage_certs_present(

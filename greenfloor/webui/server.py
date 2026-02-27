@@ -285,10 +285,20 @@ def _build_sage_client() -> "Any":
     """Build a SageRpcClient from config (or auto-detected cert paths)."""
     from greenfloor.adapters.sage_rpc import resolve_sage_client
     cfg = _load_sage_rpc_cfg()
+    fp_raw = cfg.get("fingerprint")
+    fingerprint: int | None = None
+    if fp_raw is not None:
+        try:
+            fp_int = int(fp_raw)
+            if fp_int > 0:
+                fingerprint = fp_int
+        except (TypeError, ValueError):
+            pass
     return resolve_sage_client(
         port=int(cfg.get("port") or 9257),
         cert_path=str(cfg.get("cert_path") or "") or None,
         key_path=str(cfg.get("key_path") or "") or None,
+        fingerprint=fingerprint,
     )
 
 
@@ -356,14 +366,16 @@ async def handle_sage_rpc_keys(request: web.Request) -> web.Response:
 
 
 async def handle_sage_rpc_login(request: web.Request) -> web.Response:
-    """Login to a Sage wallet key by fingerprint."""
-    from greenfloor.adapters.sage_rpc import SageRpcError
+    """Login to a Sage wallet key by fingerprint and update the server-level default."""
+    from greenfloor.adapters.sage_rpc import SageRpcError, configure_sage_fingerprint
     try:
         body = await request.json()
         fingerprint = int(body["fingerprint"])
         client = _build_sage_client()
         async with client:
             result = await client.login(fingerprint)
+        # Update the module-level default so subsequent clients use this fingerprint
+        configure_sage_fingerprint(fingerprint)
         return web.json_response({"ok": True, "result": result})
     except SageRpcError as exc:
         return web.json_response({"ok": False, "error": str(exc)}, status=exc.status or 500)
@@ -621,8 +633,33 @@ async def handle_coin_combine_stream(request: web.Request) -> web.StreamResponse
 # ---------------------------------------------------------------------------
 
 async def _on_startup(app: web.Application) -> None:
-    """Auto-start the market loop when Sage is connected and markets are enabled."""
-    from greenfloor.adapters.sage_rpc import sage_certs_present
+    """Auto-start the market loop when Sage is connected and markets are enabled.
+    Also calls login(fingerprint) once if a fingerprint is configured, so the
+    daemon and webui both start on the right wallet without re-logging in on
+    every RPC session.
+    """
+    from greenfloor.adapters.sage_rpc import SageRpcError, configure_sage_fingerprint, sage_certs_present
+    # --- one-time fingerprint login at server start ---
+    cfg = _load_sage_rpc_cfg()
+    fp_raw = cfg.get("fingerprint")
+    startup_fp: int | None = None
+    if fp_raw is not None:
+        try:
+            fp_int = int(fp_raw)
+            if fp_int > 0:
+                startup_fp = fp_int
+        except (TypeError, ValueError):
+            pass
+    configure_sage_fingerprint(startup_fp)
+    if startup_fp is not None and bool(cfg.get("enabled", False)):
+        try:
+            client = _build_sage_client()
+            async with client:
+                await client.login(startup_fp)
+            logger.info("sage_fingerprint_login_ok fingerprint=%d", startup_fp)
+        except Exception as exc:
+            logger.warning("sage_fingerprint_login_failed fingerprint=%d error=%s", startup_fp, exc)
+    # --- market loop auto-start ---
     loop: MarketLoop = app["market_loop"]
     status = loop.status()
     if status["sage_connected"] and status["enabled_markets"] > 0:

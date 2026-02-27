@@ -66,7 +66,9 @@ class SqliteStore:
               market_id TEXT NOT NULL,
               state TEXT NOT NULL,
               last_seen_status INTEGER NULL,
-              updated_at TEXT NOT NULL
+              updated_at TEXT NOT NULL,
+              direction TEXT NULL,
+              size_base_units INTEGER NULL
             );
 
             CREATE TABLE IF NOT EXISTS coin_op_ledger (
@@ -83,6 +85,16 @@ class SqliteStore:
             """
         )
         self.conn.commit()
+        # Migrate existing databases: add nullable columns added after initial schema.
+        for _col_sql in (
+            "ALTER TABLE offer_state ADD COLUMN direction TEXT NULL",
+            "ALTER TABLE offer_state ADD COLUMN size_base_units INTEGER NULL",
+        ):
+            try:
+                self.conn.execute(_col_sql)
+                self.conn.commit()
+            except sqlite3.OperationalError:
+                pass  # column already exists
 
     def get_alert_state(self, market_id: str) -> StoredAlertState:
         row = self.conn.execute(
@@ -250,18 +262,22 @@ class SqliteStore:
         market_id: str,
         state: str,
         last_seen_status: int | None,
+        direction: str | None = None,
+        size_base_units: int | None = None,
     ) -> None:
         self.conn.execute(
             """
-            INSERT INTO offer_state (offer_id, market_id, state, last_seen_status, updated_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO offer_state (offer_id, market_id, state, last_seen_status, updated_at, direction, size_base_units)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(offer_id) DO UPDATE SET
               market_id = excluded.market_id,
               state = excluded.state,
               last_seen_status = excluded.last_seen_status,
-              updated_at = excluded.updated_at
+              updated_at = excluded.updated_at,
+              direction = COALESCE(excluded.direction, offer_state.direction),
+              size_base_units = COALESCE(excluded.size_base_units, offer_state.size_base_units)
             """,
-            (offer_id, market_id, state, last_seen_status, _utcnow_iso()),
+            (offer_id, market_id, state, last_seen_status, _utcnow_iso(), direction, size_base_units),
         )
         self.conn.commit()
 
@@ -276,7 +292,8 @@ class SqliteStore:
         if market_id:
             rows = self.conn.execute(
                 """
-                SELECT offer_id, market_id, state, last_seen_status, updated_at
+                SELECT offer_id, market_id, state, last_seen_status, updated_at,
+                       direction, size_base_units
                 FROM offer_state
                 WHERE market_id = ?
                 ORDER BY updated_at DESC
@@ -287,7 +304,8 @@ class SqliteStore:
         else:
             rows = self.conn.execute(
                 """
-                SELECT offer_id, market_id, state, last_seen_status, updated_at
+                SELECT offer_id, market_id, state, last_seen_status, updated_at,
+                       direction, size_base_units
                 FROM offer_state
                 ORDER BY updated_at DESC
                 LIMIT ?
@@ -303,9 +321,36 @@ class SqliteStore:
                     int(r["last_seen_status"]) if r["last_seen_status"] is not None else None
                 ),
                 "updated_at": str(r["updated_at"]),
+                "direction": str(r["direction"]) if r["direction"] is not None else None,
+                "size_base_units": int(r["size_base_units"]) if r["size_base_units"] is not None else None,
             }
             for r in rows
         ]
+
+    def count_open_offer_slots_by_size(
+        self,
+        *,
+        market_id: str,
+        direction: str,
+    ) -> dict[int, int]:
+        """Return {size_base_units: count} of non-terminal offers for a given direction.
+
+        Counts offers in open, refresh_due, and mempool_observed states, which
+        all represent XCH/coins currently committed to live offers.
+        """
+        rows = self.conn.execute(
+            """
+            SELECT size_base_units, COUNT(*) AS cnt
+            FROM offer_state
+            WHERE market_id = ?
+              AND direction = ?
+              AND state IN ('open', 'refresh_due', 'mempool_observed')
+              AND size_base_units IS NOT NULL
+            GROUP BY size_base_units
+            """,
+            (market_id, direction),
+        ).fetchall()
+        return {int(r["size_base_units"]): int(r["cnt"]) for r in rows}
 
     def list_recent_audit_events(
         self,

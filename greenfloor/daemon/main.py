@@ -264,9 +264,12 @@ def _market_pricing(market: Any) -> dict[str, Any]:
     return dict(getattr(market, "pricing", {}) or {})
 
 
-def _strategy_config_from_market(market) -> StrategyConfig:
-    sell_ladder = market.ladders.get("sell", [])
-    targets_by_size = {int(e.size_base_units): int(e.target_count) for e in sell_ladder}
+def _strategy_config_from_market(market, *, direction: str = "sell") -> StrategyConfig:
+    if direction == "buy":
+        ladder = market.ladders.get("buy", [])
+    else:
+        ladder = market.ladders.get("sell", [])
+    targets_by_size = {int(e.size_base_units): int(e.target_count) for e in ladder}
     pricing = _market_pricing(market)
 
     def _to_int(value: Any) -> int | None:
@@ -351,6 +354,7 @@ def _inject_reseed_action_if_no_active_offers(
     store: SqliteStore,
     xch_price_usd: float | None,
     clock: datetime,
+    direction: str = "sell",
 ) -> list[PlannedAction]:
     if strategy_actions:
         _daemon_logger.debug(
@@ -416,6 +420,7 @@ def _inject_reseed_action_if_no_active_offers(
             cancel_after_create=smallest.cancel_after_create,
             reason="no_active_offer_reseed",
             target_spread_bps=smallest.target_spread_bps,
+            direction=direction,
         )
     ]
 
@@ -423,6 +428,7 @@ def _inject_reseed_action_if_no_active_offers(
 def _resolve_quote_price_quote_per_base(
     market,
     *,
+    direction: str = "sell",
     xch_price_usd: float | None = None,
 ) -> float:
     pricing = _market_pricing(market)
@@ -437,21 +443,23 @@ def _resolve_quote_price_quote_per_base(
         return float(min_q)
     if max_q is not None:
         return float(max_q)
-    # USD-pegged pricing: sell side takes priority (daemon generates sell actions by default).
-    sell_usd = pricing.get("sell_usd_per_base")
-    if sell_usd is not None:
-        if xch_price_usd is None or float(xch_price_usd) <= 0:
-            raise ValueError(
-                "xch_price_usd required for sell_usd_per_base pricing but is unavailable"
-            )
-        return float(sell_usd) / float(xch_price_usd)
-    buy_usd = pricing.get("buy_usd_per_base")
-    if buy_usd is not None:
-        if xch_price_usd is None or float(xch_price_usd) <= 0:
-            raise ValueError(
-                "xch_price_usd required for buy_usd_per_base pricing but is unavailable"
-            )
-        return float(buy_usd) / float(xch_price_usd)
+    # USD-pegged pricing: use the side-appropriate rate.
+    if direction == "buy":
+        buy_usd = pricing.get("buy_usd_per_base")
+        if buy_usd is not None:
+            if xch_price_usd is None or float(xch_price_usd) <= 0:
+                raise ValueError(
+                    "xch_price_usd required for buy_usd_per_base pricing but is unavailable"
+                )
+            return float(buy_usd) / float(xch_price_usd)
+    else:
+        sell_usd = pricing.get("sell_usd_per_base")
+        if sell_usd is not None:
+            if xch_price_usd is None or float(xch_price_usd) <= 0:
+                raise ValueError(
+                    "xch_price_usd required for sell_usd_per_base pricing but is unavailable"
+                )
+            return float(sell_usd) / float(xch_price_usd)
     raise ValueError(
         "market pricing must define fixed_quote_per_base, min/max_price_quote_per_base, "
         "sell_usd_per_base, or buy_usd_per_base"
@@ -471,7 +479,9 @@ def _build_offer_for_action(
 
     pricing = _market_pricing(market)
     try:
-        quote_price = _resolve_quote_price_quote_per_base(market, xch_price_usd=xch_price_usd)
+        quote_price = _resolve_quote_price_quote_per_base(
+            market, direction=action.direction, xch_price_usd=xch_price_usd
+        )
     except Exception as exc:
         return {
             "status": "skipped",
@@ -497,12 +507,17 @@ def _build_offer_for_action(
         "expiry_value": int(action.expiry_value),
         "quote_price_quote_per_base": quote_price,
         "base_unit_mojo_multiplier": int(pricing.get("base_unit_mojo_multiplier", 1000)),
-        "quote_unit_mojo_multiplier": int(pricing.get("quote_unit_mojo_multiplier", 1000)),
+        "quote_unit_mojo_multiplier": (
+            1_000_000_000_000
+            if str(getattr(market, "quote_asset", "") or "").strip().lower() in {"xch", "txch", "1"}
+            else int(pricing.get("quote_unit_mojo_multiplier", 1000))
+        ),
         "key_id": market.signer_key_id,
         "keyring_yaml_path": keyring_yaml_path,
         "network": network,
         "asset_id": market.base_asset,
         "use_sage_wallet": use_sage_wallet,
+        "direction": action.direction,
     }
     try:
         offer = build_offer_text(payload)
@@ -667,6 +682,83 @@ def _run_coinset_signal_capture_once(
     )
 
 
+def _daemon_sage_coin_preflight(
+    *,
+    asset_id: str,
+    offer_mojos: int,
+    number_of_coins: int,
+    receive_address: str,
+) -> bool:
+    """Check Sage has enough denominated coins; submit a split if not.
+
+    Returns True when coins are ready (offer building can proceed).
+    Returns False when coins are insufficient — a split has been submitted
+    and the caller should skip this cycle's offers for this action size;
+    the next daemon cycle will see the confirmed split coins.
+
+    No polling wait: this is fire-and-skip, not fire-and-wait.
+    """
+    _xch_ids = {"xch", "txch", "1", ""}
+    if not asset_id or asset_id.strip().lower() in _xch_ids:
+        return True  # XCH: Sage handles coin selection internally
+
+    import asyncio as _asyncio
+    from greenfloor.adapters.sage_rpc import SageRpcError as _SageRpcError, resolve_sage_client as _resolve_sage_client
+
+    def _count_eligible(coins: list[dict]) -> int:
+        count = 0
+        for c in coins:
+            if c.get("spent_height") is not None:
+                continue
+            # Skip coins already locked in an open offer (Sage sets lock_id when a coin
+            # is committed to an offer; using such a coin again would double-spend it).
+            if c.get("lock_id") is not None:
+                continue
+            try:
+                if int(c.get("amount", 0)) == offer_mojos:
+                    count += 1
+            except (TypeError, ValueError):
+                pass
+        return count
+
+    async def _check_and_split() -> tuple[bool, int]:
+        async with _resolve_sage_client() as client:
+            result = await client.get_coins(asset_id=asset_id, limit=200)
+            eligible = _count_eligible(list(result.get("coins", [])))
+            if eligible >= number_of_coins:
+                return True, eligible
+            needed = number_of_coins - eligible
+            await client.bulk_send_cat(
+                asset_id=asset_id,
+                addresses=[receive_address] * needed,
+                amount=offer_mojos,
+                fee=0,
+                auto_submit=True,
+            )
+            return False, eligible
+
+    try:
+        ready, eligible = _asyncio.run(_check_and_split())
+        if ready:
+            _daemon_logger.debug(
+                "coin_preflight_ok asset_id=%s eligible=%d needed=%d",
+                asset_id, eligible, number_of_coins,
+            )
+        else:
+            _daemon_logger.info(
+                "coin_preflight_split_submitted asset_id=%s eligible=%d needed=%d"
+                " offer_mojos=%d — skipping offers this cycle",
+                asset_id, eligible, number_of_coins, offer_mojos,
+            )
+        return ready
+    except Exception as exc:
+        _daemon_logger.warning(
+            "coin_preflight_error asset_id=%s error=%s — proceeding with offer attempt",
+            asset_id, exc,
+        )
+        return True  # Don't block on preflight errors; let offer attempt surface its own failure
+
+
 def _execute_strategy_actions(
     *,
     market,
@@ -690,6 +782,28 @@ def _execute_strategy_actions(
     # Use Sage RPC wallet when no keyring path is configured and Sage certs are present.
     use_sage_wallet = sage_certs_present()
     for action in strategy_actions:
+        if use_sage_wallet and not runtime_dry_run:
+            pricing = _market_pricing(market)
+            _base_mojo_mult = int(pricing.get("base_unit_mojo_multiplier", 1000))
+            _offer_mojos = int(action.size) * _base_mojo_mult
+            # Buy actions spend XCH (Sage handles XCH coin selection internally).
+            _preflight_asset = "xch" if action.direction == "buy" else str(market.base_asset)
+            _preflight_ok = _daemon_sage_coin_preflight(
+                asset_id=_preflight_asset,
+                offer_mojos=_offer_mojos,
+                number_of_coins=int(action.repeat),
+                receive_address=str(market.receive_address),
+            )
+            if not _preflight_ok:
+                for _ in range(int(action.repeat)):
+                    items.append({
+                        "size": action.size,
+                        "status": "skipped",
+                        "reason": "coin_preflight_split_submitted",
+                        "offer_id": None,
+                    })
+                continue
+
         for _ in range(int(action.repeat)):
             if runtime_dry_run:
                 items.append(
@@ -774,6 +888,8 @@ def _execute_strategy_actions(
                     market_id=market.market_id,
                     state=OfferLifecycleState.OPEN.value,
                     last_seen_status=0,
+                    direction=action.direction,
+                    size_base_units=int(action.size),
                 )
                 items.append(
                     {
@@ -1141,6 +1257,7 @@ def _process_single_market(
         ),
         config=strategy_config,
         clock=now,
+        direction="sell",
     )
     _daemon_logger.debug(
         (
@@ -1160,6 +1277,7 @@ def _process_single_market(
         store=store,
         xch_price_usd=xch_price_usd,
         clock=now,
+        direction="sell",
     )
     _daemon_logger.debug(
         "strategy_after_reseed market_id=%s action_count=%s reseed_injected=%s",
@@ -1167,6 +1285,31 @@ def _process_single_market(
         len(strategy_actions),
         any(str(action.reason) == "no_active_offer_reseed" for action in strategy_actions),
     )
+    # For two-sided markets, also generate buy-side actions.
+    if str(getattr(market, "mode", "")).strip().lower() == "two_sided":
+        buy_ladder = market.ladders.get("buy", [])
+        if buy_ladder:
+            buy_config = _strategy_config_from_market(market, direction="buy")
+            buy_bucket_counts = store.count_open_offer_slots_by_size(
+                market_id=market.market_id,
+                direction="buy",
+            )
+            buy_actions = evaluate_market(
+                state=_strategy_state_from_bucket_counts(
+                    buy_bucket_counts,
+                    xch_price_usd=xch_price_usd,
+                ),
+                config=buy_config,
+                clock=now,
+                direction="buy",
+            )
+            _daemon_logger.debug(
+                "buy_strategy_evaluated market_id=%s buy_bucket_counts=%s buy_action_count=%s",
+                market.market_id,
+                buy_bucket_counts,
+                len(buy_actions),
+            )
+            strategy_actions = strategy_actions + buy_actions
     store.add_audit_event(
         "strategy_actions_planned",
         {
@@ -1182,6 +1325,7 @@ def _process_single_market(
                     "cancel_after_create": action.cancel_after_create,
                     "reason": action.reason,
                     "target_spread_bps": action.target_spread_bps,
+                    "direction": action.direction,
                 }
                 for action in strategy_actions
             ],

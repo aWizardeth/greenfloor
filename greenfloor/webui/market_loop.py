@@ -65,6 +65,7 @@ class MarketLoop:
         self._running = False
         if self._task and not self._task.done():
             self._task.cancel()
+        self._task = None  # clear so start() always creates a fresh task
         logger.info("market_loop stopped")
 
     def status(self) -> dict[str, Any]:

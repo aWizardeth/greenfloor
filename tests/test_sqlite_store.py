@@ -246,6 +246,84 @@ def test_list_offer_states_orders_by_updated_at_desc(tmp_path: Path) -> None:
         store.close()
 
 
+def test_upsert_offer_state_stores_direction_and_size(tmp_path: Path) -> None:
+    store = SqliteStore(tmp_path / "gf.sqlite")
+    try:
+        store.upsert_offer_state(
+            offer_id="o1",
+            market_id="m1",
+            state="open",
+            last_seen_status=0,
+            direction="buy",
+            size_base_units=5,
+        )
+        store.upsert_offer_state(
+            offer_id="o2",
+            market_id="m1",
+            state="open",
+            last_seen_status=0,
+        )
+        rows = store.list_offer_states(market_id="m1")
+        o1 = next(r for r in rows if r["offer_id"] == "o1")
+        o2 = next(r for r in rows if r["offer_id"] == "o2")
+        assert o1["direction"] == "buy"
+        assert o1["size_base_units"] == 5
+        assert o2["direction"] is None
+        assert o2["size_base_units"] is None
+    finally:
+        store.close()
+
+
+def test_count_open_offer_slots_by_size_basic(tmp_path: Path) -> None:
+    """Only open/refresh_due/mempool_observed states are counted; direction must match."""
+    store = SqliteStore(tmp_path / "gf.sqlite")
+    try:
+        # 3 buy open offers: 2 at size 1, 1 at size 5
+        store.upsert_offer_state(offer_id="b1", market_id="m1", state="open",
+                                 last_seen_status=0, direction="buy", size_base_units=1)
+        store.upsert_offer_state(offer_id="b2", market_id="m1", state="mempool_observed",
+                                 last_seen_status=0, direction="buy", size_base_units=1)
+        store.upsert_offer_state(offer_id="b3", market_id="m1", state="refresh_due",
+                                 last_seen_status=0, direction="buy", size_base_units=5)
+        # 1 buy expired offer (must NOT be counted)
+        store.upsert_offer_state(offer_id="b4", market_id="m1", state="expired",
+                                 last_seen_status=6, direction="buy", size_base_units=1)
+        # 1 sell open offer (different direction — must NOT be counted)
+        store.upsert_offer_state(offer_id="s1", market_id="m1", state="open",
+                                 last_seen_status=0, direction="sell", size_base_units=1)
+        counts = store.count_open_offer_slots_by_size(market_id="m1", direction="buy")
+        assert counts == {1: 2, 5: 1}
+        sell_counts = store.count_open_offer_slots_by_size(market_id="m1", direction="sell")
+        assert sell_counts == {1: 1}
+    finally:
+        store.close()
+
+
+def test_count_open_offer_slots_by_size_returns_empty_when_none(tmp_path: Path) -> None:
+    store = SqliteStore(tmp_path / "gf.sqlite")
+    try:
+        assert store.count_open_offer_slots_by_size(market_id="m1", direction="buy") == {}
+    finally:
+        store.close()
+
+
+def test_upsert_offer_state_preserves_direction_on_state_update(tmp_path: Path) -> None:
+    """Updating state must not clobber an existing direction/size stored on first insert."""
+    store = SqliteStore(tmp_path / "gf.sqlite")
+    try:
+        store.upsert_offer_state(offer_id="o1", market_id="m1", state="open",
+                                 last_seen_status=0, direction="buy", size_base_units=10)
+        # Second upsert omits direction/size (as happens during Dexie status polling)
+        store.upsert_offer_state(offer_id="o1", market_id="m1", state="expired",
+                                 last_seen_status=6)
+        rows = store.list_offer_states(market_id="m1")
+        assert rows[0]["state"] == "expired"
+        assert rows[0]["direction"] == "buy"
+        assert rows[0]["size_base_units"] == 10
+    finally:
+        store.close()
+
+
 # ---------------------------------------------------------------------------
 # add_price_policy_snapshot
 # ---------------------------------------------------------------------------

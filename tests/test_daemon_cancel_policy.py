@@ -23,7 +23,14 @@ class _FakeStore:
         self.rows: list[dict] = []
 
     def upsert_offer_state(
-        self, *, offer_id: str, market_id: str, state: str, last_seen_status: int | None
+        self,
+        *,
+        offer_id: str,
+        market_id: str,
+        state: str,
+        last_seen_status: int | None,
+        direction: str | None = None,
+        size_base_units: int | None = None,
     ) -> None:
         self.rows.append(
             {

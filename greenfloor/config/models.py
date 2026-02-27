@@ -20,6 +20,10 @@ class SageRpcConfig:
     port: int = 9257
     cert_path: str = ""
     key_path: str = ""
+    # When set, every Sage RPC session calls login(fingerprint) before any
+    # operation so the daemon always uses the locked wallet, regardless of
+    # which key is active in the Sage UI.
+    fingerprint: int | None = None
 
 
 @dataclass(slots=True)
@@ -148,11 +152,21 @@ def _validate_strategy_pricing(pricing: dict[str, Any], market_id: str) -> None:
 def _parse_sage_rpc_config(raw: dict[str, Any] | None) -> SageRpcConfig:
     if not raw:
         return SageRpcConfig()
+    fp_raw = raw.get("fingerprint")
+    fingerprint: int | None = None
+    if fp_raw is not None:
+        try:
+            fp_int = int(fp_raw)
+            if fp_int > 0:
+                fingerprint = fp_int
+        except (TypeError, ValueError):
+            pass
     return SageRpcConfig(
         enabled=bool(raw.get("enabled", False)),
         port=int(raw.get("port", 9257)),
         cert_path=str(raw.get("cert_path", "") or "").strip(),
         key_path=str(raw.get("key_path", "") or "").strip(),
+        fingerprint=fingerprint,
     )
 
 

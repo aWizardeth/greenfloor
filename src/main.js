@@ -142,6 +142,9 @@ async function streamPost(url, body, onEvent) {
 const pages = {}
 // Market passed to the Build page via ▸ Build Offer buttons on market cards.
 let _pendingBuildMarket = null
+// Single timer ID for the market-loop status poll — cleared on every re-render
+// so old timers from previous dashboard renders never accumulate.
+let _loopPollTimerId = null
 
 // ── Dashboard ──────────────────────────────────────────────────────────────
 pages.dashboard = async function (content) {
@@ -406,7 +409,7 @@ pages.dashboard = async function (content) {
   // ── Market Loop ───────────────────────────────────────────────────────
   const loopRes = await api('/api/market-loop/status')
   const loop = loopRes || {}
-  const loopCard = el('div', { class: 'card' })
+  const loopCard = el('div', { class: 'card', 'data-loop-card': '1' })
   loopCard.style.borderColor = loop.running
     ? 'rgba(56,189,132,.4)'
     : loop.can_start
@@ -440,13 +443,22 @@ pages.dashboard = async function (content) {
   const loopBtns = el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px' })
 
   if (!loop.running) {
-    const startReason = !loop.sage_connected ? 'Sage certs not found' : loop.enabled_markets === 0 ? 'No enabled markets' : ''
     const startBtn = el('button', {
       class: 'btn',
-      disabled: !loop.can_start,
-      title: startReason,
       onclick: async () => {
         startBtn.disabled = true; startBtn.textContent = 'Starting…'
+        // Re-fetch status live so we reflect any market toggle that happened after page load
+        const liveStatus = await api('/api/market-loop/status').catch(() => null)
+        if (liveStatus && !liveStatus.sage_connected) {
+          alert('Cannot start: Sage wallet certs not found. Enable the RPC server in Sage Settings → RPC.')
+          startBtn.disabled = false; startBtn.textContent = '▶ Start Loop'
+          return
+        }
+        if (liveStatus && liveStatus.enabled_markets === 0) {
+          alert('Cannot start: no enabled markets. Enable at least one market first.')
+          startBtn.disabled = false; startBtn.textContent = '▶ Start Loop'
+          return
+        }
         const r = await api('/api/market-loop/start', { method: 'POST' })
         if (r.ok) pages.dashboard(content)
         else { alert('Cannot start loop: ' + (r.error || JSON.stringify(r))); pages.dashboard(content) }
@@ -467,7 +479,6 @@ pages.dashboard = async function (content) {
 
   const trigBtn = el('button', {
     class: 'btn btn-secondary',
-    disabled: !loop.can_start,
     onclick: async () => {
       trigBtn.disabled = true; trigBtn.textContent = 'Running…'
       const r = await api('/api/market-loop/trigger', { method: 'POST' })
@@ -499,6 +510,24 @@ pages.dashboard = async function (content) {
     }
     loopCard.appendChild(evLog)
   }
+
+  // Live-poll loop status every 5 s while this card is in the DOM.
+  // Catches: market enabled after page load, loop stopped/started externally.
+  // Clear any leftover timer from the previous render before registering a new one.
+  if (_loopPollTimerId !== null) { clearInterval(_loopPollTimerId); _loopPollTimerId = null }
+  _loopPollTimerId = setInterval(async () => {
+    if (!document.querySelector('[data-loop-card]')) {
+      clearInterval(_loopPollTimerId); _loopPollTimerId = null; return
+    }
+    const fresh = await api('/api/market-loop/status').catch(() => null)
+    if (!fresh) return
+    const stateChanged = fresh.running !== loop.running || fresh.can_start !== loop.can_start
+      || fresh.cycle_count !== loop.cycle_count || fresh.error_count !== loop.error_count
+    if (stateChanged) {
+      clearInterval(_loopPollTimerId); _loopPollTimerId = null
+      pages.dashboard(content)
+    }
+  }, 5000)
 
   content.appendChild(loopCard)
 
