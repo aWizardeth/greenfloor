@@ -440,9 +440,11 @@ pages.dashboard = async function (content) {
   const loopBtns = el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px' })
 
   if (!loop.running) {
+    const startReason = !loop.sage_connected ? 'Sage certs not found' : loop.enabled_markets === 0 ? 'No enabled markets' : ''
     const startBtn = el('button', {
       class: 'btn',
       disabled: !loop.can_start,
+      title: startReason,
       onclick: async () => {
         startBtn.disabled = true; startBtn.textContent = 'Starting…'
         const r = await api('/api/market-loop/start', { method: 'POST' })

@@ -20,7 +20,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from greenfloor.adapters.sage_rpc import sage_certs_present
 from greenfloor.config.io import load_markets_config_with_optional_overlay, load_program_config
 
 logger = logging.getLogger("greenfloor.webui.market_loop")
@@ -71,7 +70,7 @@ class MarketLoop:
     def status(self) -> dict[str, Any]:
         """Return current loop state for the API."""
         active = bool(self._task and not self._task.done() and self._running)
-        sage_ok = sage_certs_present()
+        sage_ok = self._sage_connected()
         enabled_markets = self._count_enabled_markets()
         return {
             "running": active,
@@ -94,6 +93,21 @@ class MarketLoop:
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
+
+    def _sage_connected(self) -> bool:
+        """Check Sage cert availability using configured paths (mirrors handle_sage_rpc_status)."""
+        try:
+            import yaml as _yaml
+            from greenfloor.adapters.sage_rpc import sage_certs_present
+            with open(self._program_path, "r", encoding="utf-8") as f:
+                data = _yaml.safe_load(f) or {}
+            sage_cfg = dict(data.get("sage_rpc", {}))
+            cert_path = str(sage_cfg.get("cert_path") or "") or None
+            key_path = str(sage_cfg.get("key_path") or "") or None
+            return sage_certs_present(cert_path, key_path)
+        except Exception:
+            from greenfloor.adapters.sage_rpc import sage_certs_present
+            return sage_certs_present()
 
     def _count_enabled_markets(self) -> int:
         try:
