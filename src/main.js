@@ -406,7 +406,7 @@ pages.dashboard = async function (content) {
   // ── Market Loop ───────────────────────────────────────────────────────
   const loopRes = await api('/api/market-loop/status')
   const loop = loopRes || {}
-  const loopCard = el('div', { class: 'card' })
+  const loopCard = el('div', { class: 'card', 'data-loop-card': '1' })
   loopCard.style.borderColor = loop.running
     ? 'rgba(56,189,132,.4)'
     : loop.can_start
@@ -499,6 +499,17 @@ pages.dashboard = async function (content) {
     }
     loopCard.appendChild(evLog)
   }
+
+  // Live-poll loop status every 5 s while this card is in the DOM.
+  // Catches: market enabled after page load, loop stopped/started externally.
+  const _loopPollTimer = setInterval(async () => {
+    if (!document.querySelector('[data-loop-card]')) { clearInterval(_loopPollTimer); return }
+    const fresh = await api('/api/market-loop/status').catch(() => null)
+    if (!fresh) return
+    const stateChanged = fresh.running !== loop.running || fresh.can_start !== loop.can_start
+      || fresh.cycle_count !== loop.cycle_count || fresh.error_count !== loop.error_count
+    if (stateChanged) { clearInterval(_loopPollTimer); pages.dashboard(content) }
+  }, 5000)
 
   content.appendChild(loopCard)
 
