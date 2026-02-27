@@ -119,6 +119,18 @@ def test_sage_count_eligible_coins_ignores_spent() -> None:
     assert _sage_count_eligible_coins(coins, offer_mojos=1000) == 1
 
 
+def test_sage_count_eligible_coins_ignores_locked() -> None:
+    """Coins with a non-None lock_id are committed to open Sage offers and must not be counted."""
+    from greenfloor.cli.manager import _sage_count_eligible_coins
+
+    coins = [
+        {"amount": 1000, "spent_height": None, "lock_id": None},      # eligible: lock_id is None
+        {"amount": 1000, "spent_height": None, "lock_id": "abc123"},  # locked → skip
+        {"amount": 1000, "spent_height": None},                       # no lock_id key → eligible
+    ]
+    assert _sage_count_eligible_coins(coins, offer_mojos=1000) == 2
+
+
 # ---------------------------------------------------------------------------
 # _sage_preflight_cat_split: XCH skip
 # ---------------------------------------------------------------------------

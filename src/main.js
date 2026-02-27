@@ -142,6 +142,9 @@ async function streamPost(url, body, onEvent) {
 const pages = {}
 // Market passed to the Build page via ▸ Build Offer buttons on market cards.
 let _pendingBuildMarket = null
+// Single timer ID for the market-loop status poll — cleared on every re-render
+// so old timers from previous dashboard renders never accumulate.
+let _loopPollTimerId = null
 
 // ── Dashboard ──────────────────────────────────────────────────────────────
 pages.dashboard = async function (content) {
@@ -510,13 +513,20 @@ pages.dashboard = async function (content) {
 
   // Live-poll loop status every 5 s while this card is in the DOM.
   // Catches: market enabled after page load, loop stopped/started externally.
-  const _loopPollTimer = setInterval(async () => {
-    if (!document.querySelector('[data-loop-card]')) { clearInterval(_loopPollTimer); return }
+  // Clear any leftover timer from the previous render before registering a new one.
+  if (_loopPollTimerId !== null) { clearInterval(_loopPollTimerId); _loopPollTimerId = null }
+  _loopPollTimerId = setInterval(async () => {
+    if (!document.querySelector('[data-loop-card]')) {
+      clearInterval(_loopPollTimerId); _loopPollTimerId = null; return
+    }
     const fresh = await api('/api/market-loop/status').catch(() => null)
     if (!fresh) return
     const stateChanged = fresh.running !== loop.running || fresh.can_start !== loop.can_start
       || fresh.cycle_count !== loop.cycle_count || fresh.error_count !== loop.error_count
-    if (stateChanged) { clearInterval(_loopPollTimer); pages.dashboard(content) }
+    if (stateChanged) {
+      clearInterval(_loopPollTimerId); _loopPollTimerId = null
+      pages.dashboard(content)
+    }
   }, 5000)
 
   content.appendChild(loopCard)

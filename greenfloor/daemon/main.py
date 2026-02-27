@@ -699,6 +699,10 @@ def _daemon_sage_coin_preflight(
         for c in coins:
             if c.get("spent_height") is not None:
                 continue
+            # Skip coins already locked in an open offer (Sage sets lock_id when a coin
+            # is committed to an offer; using such a coin again would double-spend it).
+            if c.get("lock_id") is not None:
+                continue
             try:
                 if int(c.get("amount", 0)) == offer_mojos:
                     count += 1

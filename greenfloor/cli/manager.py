@@ -2478,16 +2478,21 @@ def _get_monotonic() -> float:
 
 
 def _sage_count_eligible_coins(coins: list[dict], *, offer_mojos: int) -> int:
-    """Count Sage coins that are unspent and denominated exactly at offer_mojos.
+    """Count Sage coins that are unspent, unlocked, and denominated exactly at offer_mojos.
 
     Coins larger than offer_mojos are intentionally excluded: when Sage uses an
     oversized coin for an offer it locks the *entire* coin (not just the offer
     amount), making the excess mojos unavailable until the offer settles.  Only
     coins whose amount equals offer_mojos exactly are safe to treat as ready.
+
+    Coins with a non-None lock_id are committed to an open Sage offer and are
+    excluded even though spent_height is still None for them.
     """
     count = 0
     for c in coins:
         if c.get("spent_height") is not None:
+            continue
+        if c.get("lock_id") is not None:
             continue
         try:
             if int(c.get("amount", 0)) == offer_mojos:
