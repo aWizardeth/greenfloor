@@ -1514,7 +1514,6 @@ def run_once(
 ) -> int:
     if program is None:
         program = load_program_config(program_path)
-    configure_sage_fingerprint(program.sage_rpc.fingerprint)
     markets = load_markets_config_with_optional_overlay(
         path=markets_path,
         overlay_path=testnet_markets_path,
@@ -1775,6 +1774,7 @@ def main() -> None:
             program.home_dir, log_level=getattr(program, "app_log_level", "INFO")
         )
         _warn_if_log_level_auto_healed(program=program, program_path=Path(args.program_config))
+        configure_sage_fingerprint(program.sage_rpc.fingerprint)
         _daemon_logger.info(
             "daemon_starting mode=once program_config=%s markets_config=%s",
             args.program_config,

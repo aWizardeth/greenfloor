@@ -28,14 +28,14 @@ _default_fingerprint: int | None = None
 
 
 def configure_sage_fingerprint(fingerprint: int | None) -> None:
-    """Guard every subsequent resolve_sage_client() call against a wrong fingerprint.
+    """Pin every subsequent resolve_sage_client() session to *fingerprint*.
 
     Call once at process startup after loading the program config.  When set,
-    every Sage RPC session entry checks that the currently active Sage wallet
-    fingerprint matches *fingerprint* and raises ``SageWrongFingerprintError``
-    if it does not.  The daemon never calls ``login()`` automatically; change
-    the active wallet only by clicking the login button in the Sage UI.
-    Pass ``None`` to disable the check and accept whatever wallet is active.
+    every Sage RPC session calls ``login(fingerprint)`` on open, ensuring the
+    daemon always operates on the configured wallet regardless of which key is
+    currently active in the Sage UI.  Switching wallets in the Sage UI will not
+    affect the daemon; the configured fingerprint is re-asserted on every call.
+    Pass ``None`` to use whichever wallet is currently active in Sage.
     """
     global _default_fingerprint
     _default_fingerprint = fingerprint
@@ -105,12 +105,7 @@ class SageRpcClient:
     async def __aenter__(self) -> "SageRpcClient":
         self._session = self._make_session()
         if self._fingerprint is not None:
-            key_resp = await self.get_key()
-            active = (key_resp.get("key") or {}).get("fingerprint")
-            if active != self._fingerprint:
-                await self._session.close()
-                self._session = None
-                raise SageWrongFingerprintError(self._fingerprint, active)
+            await self.login(self._fingerprint)
         return self
 
     async def __aexit__(self, *_: Any) -> None:
@@ -266,23 +261,6 @@ class SageRpcClient:
 # ---------------------------------------------------------------------------
 # Error type
 # ---------------------------------------------------------------------------
-
-class SageWrongFingerprintError(Exception):
-    """Raised when the active Sage wallet fingerprint does not match the configured lock.
-
-    The daemon never calls ``login()`` automatically.  Switch wallets by
-    clicking the login button in the Sage UI, then retry.
-    """
-
-    def __init__(self, expected: int, active: int | None) -> None:
-        self.expected = expected
-        self.active = active
-        super().__init__(
-            f"Sage wallet fingerprint mismatch: configured lock is {expected}, "
-            f"but active fingerprint is {active}. "
-            f"Log in to the correct wallet in the Sage UI to continue."
-        )
-
 
 class SageRpcError(Exception):
     """Raised when Sage RPC returns a non-200 status."""

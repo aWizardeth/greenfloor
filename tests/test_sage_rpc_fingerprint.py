@@ -1,12 +1,12 @@
-"""Tests for Sage RPC fingerprint guard behaviour.
+"""Tests for Sage RPC fingerprint pinning behaviour.
 
-Three branches in SageRpcClient.__aenter__:
-  1. No fingerprint configured → no check, enters normally.
-  2. Fingerprint configured and active wallet matches → enters normally.
-  3. Fingerprint configured but active wallet differs → raises SageWrongFingerprintError.
+The daemon pins the configured fingerprint by calling login(fingerprint) on
+every session open, so switching wallets in the Sage UI has no lasting effect
+on which wallet the daemon operates on.
 
-The daemon never calls login() automatically; switching wallets is always
-an explicit user action in the Sage UI.
+Two branches in SageRpcClient.__aenter__:
+  1. No fingerprint configured → login() NOT called; uses whatever wallet is active.
+  2. Fingerprint configured → login(fingerprint) called every session open.
 """
 from __future__ import annotations
 
@@ -18,7 +18,6 @@ import pytest
 
 from greenfloor.adapters.sage_rpc import (
     SageRpcClient,
-    SageWrongFingerprintError,
     configure_sage_fingerprint,
     resolve_sage_client,
 )
@@ -38,109 +37,63 @@ def _make_client(fingerprint: int | None = None) -> SageRpcClient:
     )
 
 
-def _patch_session(client: SageRpcClient, active_fingerprint: int | None) -> None:
-    """Patch _make_session and get_key so no real network calls occur."""
+def _patch_session(client: SageRpcClient) -> MagicMock:
+    """Patch _make_session and login so no real network calls occur."""
     mock_session = MagicMock()
     mock_session.closed = False
     mock_session.close = AsyncMock()
     client._make_session = MagicMock(return_value=mock_session)  # type: ignore[method-assign]
-    client.get_key = AsyncMock(  # type: ignore[method-assign]
-        return_value={"key": {"fingerprint": active_fingerprint}}
-    )
+    client.login = AsyncMock(return_value={"success": True})  # type: ignore[method-assign]
+    return mock_session
 
 
 # ---------------------------------------------------------------------------
-# Branch 1: no fingerprint configured
+# Branch 1: no fingerprint configured → login NOT called
 # ---------------------------------------------------------------------------
 
 
-def test_aenter_no_fingerprint_skips_check() -> None:
+def test_aenter_no_fingerprint_skips_login() -> None:
     async def _run() -> None:
         client = _make_client(fingerprint=None)
-        mock_session = MagicMock()
-        mock_session.closed = False
-        client._make_session = MagicMock(return_value=mock_session)  # type: ignore[method-assign]
-        client.get_key = AsyncMock()  # type: ignore[method-assign]
+        _patch_session(client)
 
         result = await client.__aenter__()
 
         assert result is client
-        client.get_key.assert_not_called()  # no check performed
+        client.login.assert_not_called()
 
     asyncio.run(_run())
 
 
 # ---------------------------------------------------------------------------
-# Branch 2: fingerprint matches active wallet
+# Branch 2: fingerprint configured → login called with correct fingerprint
 # ---------------------------------------------------------------------------
 
 
-def test_aenter_fingerprint_match_enters_normally() -> None:
+def test_aenter_fingerprint_calls_login() -> None:
     async def _run() -> None:
         client = _make_client(fingerprint=111222333)
-        _patch_session(client, active_fingerprint=111222333)
+        _patch_session(client)
 
         result = await client.__aenter__()
 
         assert result is client
-        client.get_key.assert_awaited_once()
+        client.login.assert_awaited_once_with(111222333)
 
     asyncio.run(_run())
 
 
-# ---------------------------------------------------------------------------
-# Branch 3: fingerprint mismatch → raise, session cleaned up
-# ---------------------------------------------------------------------------
-
-
-def test_aenter_fingerprint_mismatch_raises() -> None:
+def test_aenter_fingerprint_overrides_active_wallet() -> None:
+    """Even if the Sage UI switched to a different wallet, login() re-asserts the pin."""
     async def _run() -> None:
         client = _make_client(fingerprint=111222333)
-        _patch_session(client, active_fingerprint=999888777)
+        _patch_session(client)
+        # Simulate: UI had switched to 999888777; daemon still calls login(111222333)
+        client.login = AsyncMock(return_value={"success": True})  # type: ignore[method-assign]
 
-        with pytest.raises(SageWrongFingerprintError) as exc_info:
-            await client.__aenter__()
+        await client.__aenter__()
 
-        err = exc_info.value
-        assert err.expected == 111222333
-        assert err.active == 999888777
-        # Session must have been closed — no resource leak
-        assert client._session is None
-
-    asyncio.run(_run())
-
-
-def test_aenter_fingerprint_mismatch_message_is_helpful() -> None:
-    async def _run() -> None:
-        client = _make_client(fingerprint=111222333)
-        _patch_session(client, active_fingerprint=999888777)
-
-        with pytest.raises(SageWrongFingerprintError) as exc_info:
-            await client.__aenter__()
-
-        msg = str(exc_info.value)
-        assert "111222333" in msg
-        assert "999888777" in msg
-        assert "Sage UI" in msg
-
-    asyncio.run(_run())
-
-
-# ---------------------------------------------------------------------------
-# Mismatch when active key is None (Sage logged out)
-# ---------------------------------------------------------------------------
-
-
-def test_aenter_fingerprint_mismatch_none_active_raises() -> None:
-    """get_key returns no active key (e.g. logged out) → treated as mismatch."""
-    async def _run() -> None:
-        client = _make_client(fingerprint=111222333)
-        _patch_session(client, active_fingerprint=None)
-
-        with pytest.raises(SageWrongFingerprintError) as exc_info:
-            await client.__aenter__()
-
-        assert exc_info.value.active is None
+        client.login.assert_awaited_once_with(111222333)
 
     asyncio.run(_run())
 
