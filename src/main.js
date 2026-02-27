@@ -151,6 +151,94 @@ let _pendingBuildMarket = null
 // so old timers from previous dashboard renders never accumulate.
 let _loopPollTimerId = null
 
+// Patch all loop-card DOM elements in-place from a fresh /api/market-loop/status
+// response. Never triggers a full dashboard re-render.
+async function _patchLoopCard() {
+  const card = document.querySelector('[data-loop-card]')
+  if (!card) return
+  const fresh = await api('/api/market-loop/status').catch(() => null)
+  if (!fresh) return
+
+  // Border color
+  card.style.borderColor = fresh.running
+    ? 'rgba(56,189,132,.4)'
+    : fresh.can_start
+      ? 'rgba(99,102,241,.3)'
+      : 'rgba(120,120,120,.2)'
+
+  // Header badges (keep title span, replace everything after it)
+  const hdr = card.querySelector('[data-loop-hdr]')
+  if (hdr) {
+    while (hdr.children.length > 1) hdr.removeChild(hdr.lastChild)
+    hdr.appendChild(badge(fresh.running ? '● running' : '○ stopped', fresh.running ? 'green' : 'muted'))
+    if (!fresh.sage_connected) hdr.appendChild(badge('Sage offline', 'yellow'))
+    if (fresh.enabled_markets === 0) hdr.appendChild(badge('no enabled markets', 'muted'))
+  }
+
+  // Start / Stop button swap
+  const ss = card.querySelector('[data-loop-startstop]')
+  if (ss) {
+    ss.innerHTML = ''
+    if (!fresh.running) {
+      const startBtn = el('button', {
+        class: 'btn',
+        onclick: async () => {
+          startBtn.disabled = true; startBtn.textContent = 'Starting\u2026'
+          const liveStatus = await api('/api/market-loop/status').catch(() => null)
+          if (liveStatus && !liveStatus.sage_connected) {
+            alert('Cannot start: Sage wallet certs not found. Enable the RPC server in Sage Settings \u2192 RPC.')
+            startBtn.disabled = false; startBtn.textContent = '\u25b6 Start Loop'
+            return
+          }
+          if (liveStatus && liveStatus.enabled_markets === 0) {
+            alert('Cannot start: no enabled markets. Enable at least one market first.')
+            startBtn.disabled = false; startBtn.textContent = '\u25b6 Start Loop'
+            return
+          }
+          const r = await api('/api/market-loop/start', { method: 'POST' })
+          if (!r.ok) alert('Cannot start loop: ' + (r.error || JSON.stringify(r)))
+          await _patchLoopCard()
+        },
+      }, '\u25b6 Start Loop')
+      ss.appendChild(startBtn)
+    } else {
+      const stopBtn = el('button', {
+        class: 'btn btn-secondary',
+        onclick: async () => {
+          stopBtn.disabled = true; stopBtn.textContent = 'Stopping\u2026'
+          await api('/api/market-loop/stop', { method: 'POST' })
+          await _patchLoopCard()
+        },
+      }, '\u23f9 Stop Loop')
+      ss.appendChild(stopBtn)
+    }
+  }
+
+  // Stats
+  const cycleEl = card.querySelector('[data-loop-stat-cycles] .stat-value')
+  const errEl   = card.querySelector('[data-loop-stat-errors] .stat-value')
+  const lastEl  = card.querySelector('[data-loop-stat-last] .stat-value')
+  if (cycleEl) cycleEl.textContent = String(fresh.cycle_count ?? 0)
+  if (errEl) {
+    errEl.textContent = String(fresh.error_count ?? 0)
+    errEl.style.color = fresh.error_count > 0 ? 'var(--red)' : ''
+  }
+  if (lastEl) lastEl.textContent = fresh.last_cycle_at ? new Date(fresh.last_cycle_at).toLocaleTimeString() : '\u2014'
+
+  // Events log
+  const evLogEl = card.querySelector('[data-loop-events]')
+  if (evLogEl && fresh.recent_events?.length) {
+    evLogEl.style.display = ''
+    evLogEl.innerHTML = ''
+    for (const ev of fresh.recent_events.slice().reverse()) {
+      const line = el('div', { style: `color:${ev.type === 'cycle_error' ? 'var(--red)' : ev.type === 'cycle_done' ? 'var(--green)' : 'var(--muted)'}` })
+      const ts = ev.at ? new Date(ev.at).toLocaleTimeString() : ''
+      line.textContent = `${ts}  ${ev.message}`
+      evLogEl.appendChild(line)
+    }
+  }
+}
+
 // ── Dashboard ──────────────────────────────────────────────────────────────
 pages.dashboard = async function (content) {
   content.innerHTML = ''
@@ -421,7 +509,7 @@ pages.dashboard = async function (content) {
       ? 'rgba(99,102,241,.3)'
       : 'rgba(120,120,120,.2)'
 
-  const loopHdr = el('div', { style: 'display:flex;align-items:center;gap:10px;margin-bottom:14px' })
+  const loopHdr = el('div', { 'data-loop-hdr': '1', style: 'display:flex;align-items:center;gap:10px;margin-bottom:14px' })
   loopHdr.appendChild(el('div', { class: 'card-title', style: 'margin:0' }, 'Market Loop'))
   loopHdr.appendChild(badge(
     loop.running ? '● running' : '○ stopped',
@@ -438,21 +526,29 @@ pages.dashboard = async function (content) {
   loopCard.appendChild(loopDesc)
 
   const loopGrid = el('div', { class: 'grid-3', style: 'margin-bottom:14px' })
-  loopGrid.appendChild(makeStat('Cycles run', String(loop.cycle_count ?? 0)))
-  loopGrid.appendChild(makeStat('Errors', String(loop.error_count ?? 0), loop.error_count > 0 ? 'var(--red)' : undefined))
-  loopGrid.appendChild(makeStat('Last cycle',
-    loop.last_cycle_at ? new Date(loop.last_cycle_at).toLocaleTimeString() : '—'))
+  const _cycleStat = makeStat('Cycles run', String(loop.cycle_count ?? 0))
+  _cycleStat.dataset.loopStatCycles = '1'
+  loopGrid.appendChild(_cycleStat)
+  const _errStat = makeStat('Errors', String(loop.error_count ?? 0), loop.error_count > 0 ? 'var(--red)' : undefined)
+  _errStat.dataset.loopStatErrors = '1'
+  loopGrid.appendChild(_errStat)
+  const _lastStat = makeStat('Last cycle',
+    loop.last_cycle_at ? new Date(loop.last_cycle_at).toLocaleTimeString() : '—')
+  _lastStat.dataset.loopStatLast = '1'
+  loopGrid.appendChild(_lastStat)
   loopCard.appendChild(loopGrid)
 
   // Controls row
   const loopBtns = el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px' })
 
+  // [data-loop-startstop] is a display:contents wrapper so _patchLoopCard can
+  // swap Start ↔ Stop without touching the rest of the buttons row.
+  const _ssWrap = el('div', { 'data-loop-startstop': '1', style: 'display:contents' })
   if (!loop.running) {
     const startBtn = el('button', {
       class: 'btn',
       onclick: async () => {
         startBtn.disabled = true; startBtn.textContent = 'Starting…'
-        // Re-fetch status live so we reflect any market toggle that happened after page load
         const liveStatus = await api('/api/market-loop/status').catch(() => null)
         if (liveStatus && !liveStatus.sage_connected) {
           alert('Cannot start: Sage wallet certs not found. Enable the RPC server in Sage Settings → RPC.')
@@ -465,22 +561,23 @@ pages.dashboard = async function (content) {
           return
         }
         const r = await api('/api/market-loop/start', { method: 'POST' })
-        if (r.ok) pages.dashboard(content)
-        else { alert('Cannot start loop: ' + (r.error || JSON.stringify(r))); pages.dashboard(content) }
+        if (!r.ok) alert('Cannot start loop: ' + (r.error || JSON.stringify(r)))
+        await _patchLoopCard()
       },
     }, '▶ Start Loop')
-    loopBtns.appendChild(startBtn)
+    _ssWrap.appendChild(startBtn)
   } else {
     const stopBtn = el('button', {
       class: 'btn btn-secondary',
       onclick: async () => {
         stopBtn.disabled = true; stopBtn.textContent = 'Stopping…'
         await api('/api/market-loop/stop', { method: 'POST' })
-        pages.dashboard(content)
+        await _patchLoopCard()
       },
     }, '⏹ Stop Loop')
-    loopBtns.appendChild(stopBtn)
+    _ssWrap.appendChild(stopBtn)
   }
+  loopBtns.appendChild(_ssWrap)
 
   const trigBtn = el('button', {
     class: 'btn btn-secondary',
@@ -492,7 +589,7 @@ pages.dashboard = async function (content) {
         const code = r.result?.exit_code
         trigBtn.textContent = code === 0 ? '✓ Done' : `✗ Error (${code})`
         setTimeout(() => { trigBtn.textContent = '⚡ Run Once' }, 3000)
-        pages.dashboard(content)
+        _patchLoopCard()
       } else {
         alert('Trigger failed: ' + (r.error || JSON.stringify(r)))
       }
@@ -503,18 +600,18 @@ pages.dashboard = async function (content) {
 
   // Recent loop events log
   const events = loop.recent_events || []
-  if (events.length) {
-    const evLog = el('div', {
-      style: 'background:var(--surface-alt,#151515);border-radius:6px;padding:8px 12px;max-height:140px;overflow-y:auto;font-family:monospace;font-size:11px',
-    })
-    for (const ev of events.slice().reverse()) {
-      const line = el('div', { style: `color:${ev.type === 'cycle_error' ? 'var(--red)' : ev.type === 'cycle_done' ? 'var(--green)' : 'var(--muted)'}` })
-      const ts = ev.at ? new Date(ev.at).toLocaleTimeString() : ''
-      line.textContent = `${ts}  ${ev.message}`
-      evLog.appendChild(line)
-    }
-    loopCard.appendChild(evLog)
+  const evLog = el('div', {
+    style: 'background:var(--surface-alt,#151515);border-radius:6px;padding:8px 12px;max-height:140px;overflow-y:auto;font-family:monospace;font-size:11px',
+    'data-loop-events': '1',
+  })
+  if (!events.length) evLog.style.display = 'none'
+  for (const ev of events.slice().reverse()) {
+    const line = el('div', { style: `color:${ev.type === 'cycle_error' ? 'var(--red)' : ev.type === 'cycle_done' ? 'var(--green)' : 'var(--muted)'}` })
+    const ts = ev.at ? new Date(ev.at).toLocaleTimeString() : ''
+    line.textContent = `${ts}  ${ev.message}`
+    evLog.appendChild(line)
   }
+  loopCard.appendChild(evLog)
 
   // Live-poll loop status every 5 s while this card is in the DOM.
   // Catches: market enabled after page load, loop stopped/started externally.
@@ -524,14 +621,7 @@ pages.dashboard = async function (content) {
     if (!document.querySelector('[data-loop-card]')) {
       clearInterval(_loopPollTimerId); _loopPollTimerId = null; return
     }
-    const fresh = await api('/api/market-loop/status').catch(() => null)
-    if (!fresh) return
-    const stateChanged = fresh.running !== loop.running || fresh.can_start !== loop.can_start
-      || fresh.cycle_count !== loop.cycle_count || fresh.error_count !== loop.error_count
-    if (stateChanged) {
-      clearInterval(_loopPollTimerId); _loopPollTimerId = null
-      pages.dashboard(content)
-    }
+    await _patchLoopCard()
   }, 5000)
 
   content.appendChild(loopCard)
