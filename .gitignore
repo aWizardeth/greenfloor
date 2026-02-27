@@ -32,3 +32,5 @@ state/
 # Local env files
 .env
 .env.*
+webui.err
+webui.log

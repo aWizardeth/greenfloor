@@ -4,8 +4,10 @@ GreenFloor is a long-running Python application for Chia CAT market making.
 
 ## Components
 
-- `greenfloor-manager`: manager CLI for config validation, key onboarding, cloud-wallet coin inventory/reshaping, offer building/posting, and operational checks.
+- `greenfloor-manager`: manager CLI for config validation, key onboarding, coin inventory/reshaping, offer building/posting, and operational checks.
 - `greenfloord`: daemon process that evaluates configured markets, executes offers, and emits low-inventory alerts.
+- `greenfloor-webui`: local aiohttp API server that backs the browser-based operator dashboard.
+- **Sage Wallet** integration: when Sage is installed and running locally, `greenfloor-manager build-and-post-offer` uses the Sage RPC (`127.0.0.1:9257`) to sign and construct offers via mTLS — no separate key-onboarding required.
 
 ## V1 Plan
 
@@ -46,7 +48,7 @@ greenfloor-manager doctor
 greenfloor-manager --json doctor
 ```
 
-Onboard signing keys:
+Onboard signing keys (BLS / cloud-wallet path only — not needed for Sage):
 
 ```bash
 greenfloor-manager keys-onboard --key-id <your-key-id>
@@ -57,16 +59,39 @@ Build and post offers:
 ```bash
 # Dry-run preflight
 greenfloor-manager build-and-post-offer --pair ECO.181.2022:xch --size-base-units 1 --dry-run
-# Publish (mainnet default)
-greenfloor-manager build-and-post-offer --pair ECO.181.2022:xch --size-base-units 1
-# Publish on testnet11
+# Sell side: offer base CAT, request XCH (default)
+greenfloor-manager build-and-post-offer --pair ECO.181.2022:xch --size-base-units 1 --side sell
+# Buy side: offer XCH, request base CAT
+greenfloor-manager build-and-post-offer --pair ECO.181.2022:xch --size-base-units 1 --side buy
+# testnet11
 greenfloor-manager build-and-post-offer --pair TDBX:txch --size-base-units 1 --network testnet11
 ```
 
-Cloud Wallet vault operations:
+`--side` controls which leg is offered:
+- `sell` (default): offer `size` units of the base CAT, request XCH at `sell_usd_per_base` pricing.
+- `buy`: offer XCH equivalent, request `size` units of the base CAT at `buy_usd_per_base` pricing.
+
+### Sage Wallet Path
+
+When [Sage](https://github.com/rigidnetwork/sage) is installed and running, GreenFloor detects its mTLS certificates automatically and routes offer construction through the Sage RPC instead of the BLS signing path. No key-onboarding step is needed.
 
 ```bash
-# List vault inventory (XCH + CAT)
+# Sage certs are auto-detected from the OS data directory:
+# Windows:  %APPDATA%\com.rigidnetwork.sage\ssl\wallet.{crt,key}
+# macOS:    ~/Library/Application Support/com.rigidnetwork.sage/ssl/wallet.{crt,key}
+# Linux:    ~/.local/share/com.rigidnetwork.sage/ssl/wallet.{crt,key}
+
+# With Sage running, build-and-post-offer automatically uses Sage make_offer:
+greenfloor-manager build-and-post-offer --pair BYC:xch --size-base-units 1 --side sell --dry-run
+greenfloor-manager build-and-post-offer --pair BYC:xch --size-base-units 1 --side buy --dry-run
+```
+
+See [SAGE_WALLET_API.md](SAGE_WALLET_API.md) for the full Sage RPC client reference.
+
+Coin operations (cloud wallet / BLS path):
+
+```bash
+# List coin inventory (XCH + CAT)
 greenfloor-manager coins-list
 
 # Split one coin into target denominations (waits through signature + mempool + confirmation + reorg watch)
@@ -99,6 +124,60 @@ Run the daemon:
 ```bash
 greenfloord --program-config config/program.yaml --markets-config config/markets.yaml --once
 ```
+
+## Web UI
+
+GreenFloor ships a browser-based operator dashboard backed by a local aiohttp server.
+
+### Development (hot-reload)
+
+```bash
+# Install Node dependencies once:
+npm install
+
+# Start API server + Vite dev server together:
+npm run dev
+# API:  http://127.0.0.1:8765
+# UI:   http://127.0.0.1:3000
+```
+
+`npm run dev` launches two processes via `concurrently`:
+- `node scripts/dev-api.js` — spawns `python -m greenfloor.webui --port 8765` from the project `.venv`.
+- `vite --port 3000` — serves `src/main.js` + `src/style.css` with hot-module replacement.
+
+### Production (static build)
+
+```bash
+npm run build        # outputs to dist/
+greenfloor-webui     # serves dist/ + API on 127.0.0.1:8765
+```
+
+### Web UI API endpoints
+
+All endpoints are served by `greenfloor.webui.server` (registered in `create_app()`):
+
+| Method | Path | Description |
+|--------|------|--------------|
+| GET | `/api/doctor` | Run `doctor` check; returns problems/warnings/config paths |
+| GET | `/api/config-validate` | Run `config-validate` |
+| GET | `/api/config-paths` | Return resolved program + markets config paths |
+| GET | `/api/config-read` | Read raw YAML config files |
+| POST | `/api/config-write` | Write updated YAML config files |
+| GET | `/api/offers-status` | List stored offer states with pair enrichment (`base_symbol`, `quote_asset`) |
+| POST | `/api/offers-reconcile` | Reconcile open offers against Dexie/chain |
+| GET | `/api/coins-list` | List coin inventory |
+| POST | `/api/build-offer/stream` | SSE stream — builds + posts an offer (calls `build-and-post-offer`) |
+| POST | `/api/coin-split/stream` | SSE stream — split a coin |
+| POST | `/api/coin-combine/stream` | SSE stream — combine coins |
+| GET | `/api/sage-rpc/status` | Sage RPC reachability + sync status |
+| GET | `/api/sage-rpc/keys` | List Sage wallet keys |
+| POST | `/api/sage-rpc/login` | Login to a Sage fingerprint |
+| POST | `/api/sage-rpc/call` | Raw passthrough to any Sage RPC endpoint |
+| GET | `/api/sage-rpc/coins` | List coins held by the active Sage key |
+| GET | `/api/sage-rpc/cats` | List CAT tokens held by the active Sage key |
+| GET | `/api/prices` | Fetch current XCH price (CoinCodex) |
+| GET | `/api/markets-list` | List configured markets with enabled/disabled status |
+| POST | `/api/markets-write` | Enable/disable or update a market in `markets.yaml` |
 
 ## Developer Checks
 

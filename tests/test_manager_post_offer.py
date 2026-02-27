@@ -5,6 +5,8 @@ import sys
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
+
 import greenfloor.cli.manager as manager_mod
 from greenfloor.adapters.cloud_wallet import CloudWalletAdapter
 from greenfloor.cli.manager import (
@@ -19,6 +21,49 @@ from greenfloor.cli.manager import (
     _verify_offer_text_for_dexie,
 )
 from tests.logging_helpers import reset_concurrent_log_handlers
+
+
+@pytest.fixture(autouse=True)
+def _stub_sage_certs_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep Sage preflight from firing in tests that don't set up a Sage RPC mock.
+
+    Tests in this file predate the preflight feature.  Without this stub,
+    ``_build_and_post_offer(dry_run=False)`` would call ``sage_certs_present()``
+    and, on developer machines where Sage is installed, would attempt to open a
+    real RPC connection.
+    """
+    monkeypatch.setattr("greenfloor.cli.manager.sage_certs_present", lambda: False)
+
+
+@pytest.fixture(autouse=True)
+def _stub_sqlite_store(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent _build_and_post_offer from writing to the real ~/.greenfloor/db.
+
+    Without this stub, non-dry-run tests open SqliteStore against the operator's
+    real database and persist fixture offer IDs (offer-123, offer-xyz, etc.)
+    into the live store.
+    """
+
+    class _NoOpStore:
+        def __init__(self, *_a: object, **_kw: object) -> None:
+            pass
+
+        def upsert_offer_state(self, *_a: object, **_kw: object) -> None:
+            pass
+
+        def add_audit_event(self, *_a: object, **_kw: object) -> None:
+            pass
+
+        def list_recent_audit_events(self, *_a: object, **_kw: object) -> list:
+            return []
+
+        def list_offer_states(self, *_a: object, **_kw: object) -> list:
+            return []
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("greenfloor.cli.manager.SqliteStore", _NoOpStore)
 
 
 def test_resolve_dexie_base_url_by_network() -> None:
@@ -243,8 +288,14 @@ def test_resolve_cloud_wallet_offer_asset_ids_uses_global_hints_without_label_ma
     assert resolved_quote == "Asset_wusdc"
 
 
-def test_recent_market_resolved_asset_id_hints_reads_strategy_execution(tmp_path: Path) -> None:
+def test_recent_market_resolved_asset_id_hints_reads_strategy_execution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from greenfloor.storage.sqlite import SqliteStore
+
+    # The autouse _stub_sqlite_store fixture patches manager.SqliteStore to _NoOpStore.
+    # Restore the real class so _recent_market_resolved_asset_id_hints can read the DB.
+    monkeypatch.setattr("greenfloor.cli.manager.SqliteStore", SqliteStore)
 
     home_dir = tmp_path / "home"
     db_path = home_dir / "db" / "greenfloor.sqlite"
@@ -1291,6 +1342,7 @@ def test_build_and_post_offer_dry_run_returns_nonzero_when_build_fails(
     markets = tmp_path / "markets.yaml"
     _write_program(program)
     _write_markets(markets)
+    capture_dir = tmp_path / "offer-capture"
 
     def _raise_build_error(_payload):
         raise RuntimeError("signing_failed:no_agg_sig_targets_found")
@@ -1299,6 +1351,9 @@ def test_build_and_post_offer_dry_run_returns_nonzero_when_build_fails(
         "greenfloor.cli.manager._build_offer_text_for_request",
         _raise_build_error,
     )
+    # Build failures in dry-run are only triggered when the debug capture dir is set;
+    # without it the builder is skipped and a parameter preview is returned instead.
+    monkeypatch.setenv("GREENFLOOR_DEBUG_DRY_RUN_OFFER_CAPTURE_DIR", str(capture_dir))
 
     code = _build_and_post_offer(
         program_path=program,

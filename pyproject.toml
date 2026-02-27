@@ -21,6 +21,7 @@ dev = [
 [project.scripts]
 greenfloor-manager = "greenfloor.cli.manager:main"
 greenfloord = "greenfloor.daemon.main:main"
+greenfloor-webui = "greenfloor.webui.server:main"
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]

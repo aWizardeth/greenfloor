@@ -22,6 +22,8 @@ import yaml
 from greenfloor.adapters.cloud_wallet import CloudWalletAdapter, CloudWalletConfig
 from greenfloor.adapters.coinset import CoinsetAdapter, extract_coinset_tx_ids_from_offer_payload
 from greenfloor.adapters.dexie import DexieAdapter
+from greenfloor.adapters.price import PriceAdapter
+from greenfloor.adapters.sage_rpc import sage_certs_present
 from greenfloor.adapters.splash import SplashAdapter
 from greenfloor.cli.offer_builder_sdk import build_offer_text
 from greenfloor.config.io import (
@@ -2276,7 +2278,11 @@ def _build_and_post_offer_cloud_wallet(
             round(
                 float(size_base_units)
                 * float(quote_price)
-                * int((market.pricing or {}).get("quote_unit_mojo_multiplier", 1000))
+                * (
+                    1_000_000_000_000
+                    if str(getattr(market, "quote_asset", "") or "").strip().lower() in {"xch", "txch", "1"}
+                    else int((market.pricing or {}).get("quote_unit_mojo_multiplier", 1000))
+                )
             )
         )
         if request_amount <= 0:
@@ -2453,6 +2459,229 @@ def _build_and_post_offer_cloud_wallet(
     return 0 if publish_failures == 0 else 2
 
 
+# ---------------------------------------------------------------------------
+# Sage coin denomination preflight
+# ---------------------------------------------------------------------------
+_SAGE_PREFLIGHT_POLL_INTERVAL: float = 15.0
+_SAGE_PREFLIGHT_WARNING_INTERVAL: float = 30.0
+
+
+def _get_monotonic() -> float:
+    """Thin wrapper around time.monotonic() for test injection.
+
+    Tests patch ``greenfloor.cli.manager._get_monotonic`` rather than
+    ``time.monotonic`` so that asyncio's Windows ProactorEventLoop—which also
+    calls ``time.monotonic()`` internally during event-loop teardown—is not
+    affected by the mock.
+    """
+    return time.monotonic()
+
+
+def _sage_count_eligible_coins(coins: list[dict], *, offer_mojos: int) -> int:
+    """Count Sage coins that are unspent and denominated exactly at offer_mojos.
+
+    Coins larger than offer_mojos are intentionally excluded: when Sage uses an
+    oversized coin for an offer it locks the *entire* coin (not just the offer
+    amount), making the excess mojos unavailable until the offer settles.  Only
+    coins whose amount equals offer_mojos exactly are safe to treat as ready.
+    """
+    count = 0
+    for c in coins:
+        if c.get("spent_height") is not None:
+            continue
+        try:
+            if int(c.get("amount", 0)) == offer_mojos:
+                count += 1
+        except (TypeError, ValueError):
+            pass
+    return count
+
+
+def _sage_preflight_cat_split(
+    *,
+    asset_id: str,
+    receive_address: str | None = None,
+    offer_mojos: int,
+    number_of_coins: int,
+    wait_seconds: int = 120,
+    poll_interval: float = _SAGE_PREFLIGHT_POLL_INTERVAL,
+    warning_interval: float = _SAGE_PREFLIGHT_WARNING_INTERVAL,
+) -> int:
+    """Ensure the Sage wallet has ≥ *number_of_coins* unspent coins of ≥ *offer_mojos*
+    each for the given CAT *asset_id*.
+
+    If *receive_address* is None (the default), the active wallet's receive address is
+    fetched from Sage's ``get_sync_status`` endpoint, so the split coins land in
+    the wallet rather than an address from the static markets configuration.
+
+    If the wallet already has enough denominated coins, returns 0 immediately.
+    Otherwise submits a ``bulk_send_cat`` split transaction to create the missing
+    coins and polls until they appear as unspent, up to *wait_seconds*.
+
+    Returns 0 on success, 3 on split failure or timeout.
+    """
+    import asyncio
+    import time
+
+    from greenfloor.adapters.sage_rpc import SageRpcError, resolve_sage_client
+
+    _xch_ids = {"xch", "txch", "1", ""}
+    if not asset_id or asset_id.strip().lower() in _xch_ids:
+        return 0  # XCH: denomination splits not needed
+
+    async def _fetch_coins_and_address() -> tuple[list[dict], str]:
+        async with resolve_sage_client() as client:
+            coins_result, sync_result = await asyncio.gather(
+                client.get_coins(asset_id=asset_id, limit=200),
+                client.get_sync_status(),
+            )
+        coins = list(coins_result.get("coins", []))
+        addr = str(sync_result.get("receive_address", "")).strip()
+        return coins, addr
+
+    async def _fetch_coins() -> list[dict]:
+        async with resolve_sage_client() as client:
+            result = await client.get_coins(asset_id=asset_id, limit=200)
+        return list(result.get("coins", []))
+
+    # ---- initial readiness check + address resolution ----
+    coins, sage_address = asyncio.run(_fetch_coins_and_address())
+    resolved_address = receive_address if receive_address else sage_address
+    if not resolved_address:
+        print(
+            _format_json_output(
+                {
+                    "status": "coin_preflight",
+                    "result": "error",
+                    "error": "could_not_resolve_receive_address_from_sage",
+                }
+            )
+        )
+        return 3
+    eligible = _sage_count_eligible_coins(coins, offer_mojos=offer_mojos)
+    if eligible >= number_of_coins:
+        print(
+            _format_json_output(
+                {
+                    "status": "coin_preflight",
+                    "result": "already_ready",
+                    "eligible": eligible,
+                    "needed": number_of_coins,
+                }
+            )
+        )
+        return 0
+
+    coins_needed = number_of_coins - eligible
+    print(
+        _format_json_output(
+            {
+                "status": "coin_preflight",
+                "result": "splitting",
+                "eligible": eligible,
+                "needed": number_of_coins,
+                "splitting": coins_needed,
+                "offer_mojos": offer_mojos,
+                "asset_id": asset_id,
+                "receive_address": resolved_address,
+            }
+        )
+    )
+
+    # ---- submit split via Sage bulk_send_cat ----
+    async def _do_split() -> dict:
+        async with resolve_sage_client() as client:
+            return await client.bulk_send_cat(
+                asset_id=asset_id,
+                addresses=[resolved_address] * coins_needed,
+                amount=offer_mojos,
+                fee=0,
+                auto_submit=True,
+            )
+
+    try:
+        asyncio.run(_do_split())
+    except (SageRpcError, Exception) as exc:
+        print(
+            _format_json_output(
+                {
+                    "status": "coin_preflight",
+                    "result": "split_failed",
+                    "error": str(exc),
+                }
+            )
+        )
+        return 3
+
+    print(_format_json_output({"status": "coin_preflight", "result": "split_submitted"}))
+
+    # ---- poll for confirmed coins ----
+    start = _get_monotonic()
+    next_warning = start + warning_interval
+    while True:
+        elapsed = _get_monotonic() - start
+        if elapsed >= wait_seconds:
+            print(
+                _format_json_output(
+                    {
+                        "status": "coin_preflight",
+                        "result": "timeout",
+                        "elapsed_seconds": int(elapsed),
+                        "eligible": eligible,
+                        "needed": number_of_coins,
+                    }
+                )
+            )
+            return 3
+
+        time.sleep(poll_interval)
+
+        try:
+            coins = asyncio.run(_fetch_coins())
+        except Exception as exc:
+            print(
+                _format_json_output(
+                    {
+                        "status": "coin_preflight",
+                        "result": "poll_error",
+                        "error": str(exc),
+                    }
+                )
+            )
+            continue
+
+        eligible = _sage_count_eligible_coins(coins, offer_mojos=offer_mojos)
+        elapsed = _get_monotonic() - start
+
+        if elapsed >= next_warning:
+            print(
+                _format_json_output(
+                    {
+                        "status": "coin_preflight",
+                        "result": "still_waiting",
+                        "eligible": eligible,
+                        "needed": number_of_coins,
+                        "elapsed_seconds": int(elapsed),
+                    }
+                )
+            )
+            next_warning += warning_interval
+
+        if eligible >= number_of_coins:
+            print(
+                _format_json_output(
+                    {
+                        "status": "coin_preflight",
+                        "result": "ready",
+                        "eligible": eligible,
+                        "needed": number_of_coins,
+                        "elapsed_seconds": int(elapsed),
+                    }
+                )
+            )
+            return 0
+
+
 def _build_and_post_offer(
     *,
     program_path: Path,
@@ -2469,7 +2698,11 @@ def _build_and_post_offer(
     drop_only: bool,
     claim_rewards: bool,
     dry_run: bool,
+    state_db: str | None = None,
+    side: str = "sell",
 ) -> int:
+    if side not in ("buy", "sell"):
+        raise ValueError(f"side must be 'buy' or 'sell', got: {side!r}")
     if size_base_units <= 0:
         raise ValueError("size_base_units must be positive")
     if repeat <= 0:
@@ -2500,8 +2733,32 @@ def _build_and_post_offer(
         elif max_q is not None:
             quote_price = float(max_q)
     if quote_price is None:
+        # USD-pegged pricing: resolve via live XCH/USD rate.
+        sell_usd = pricing.get("sell_usd_per_base")
+        buy_usd = pricing.get("buy_usd_per_base")
+        usd_per_base = (
+            buy_usd if (side == "buy" and buy_usd is not None) else
+            sell_usd if sell_usd is not None else
+            buy_usd
+        )
+        if usd_per_base is not None:
+            try:
+                import asyncio
+
+                xch_usd = asyncio.run(PriceAdapter().get_xch_price())
+            except Exception as exc:
+                raise ValueError(
+                    f"sell_usd_per_base/buy_usd_per_base pricing requires a live XCH/USD price but fetch failed: {exc}"
+                ) from exc
+            if not xch_usd or float(xch_usd) <= 0:
+                raise ValueError(
+                    "sell_usd_per_base/buy_usd_per_base: XCH/USD price is zero or unavailable"
+                )
+            quote_price = float(usd_per_base) / float(xch_usd)
+    if quote_price is None:
         raise ValueError(
-            "market pricing must define fixed_quote_per_base or min/max_price_quote_per_base for offer build"
+            "market pricing must define fixed_quote_per_base, min/max_price_quote_per_base, "
+            "sell_usd_per_base, or buy_usd_per_base for offer build"
         )
 
     cloud_wallet_configured = (
@@ -2543,30 +2800,159 @@ def _build_and_post_offer(
     dexie = DexieAdapter(dexie_base_url) if (not dry_run and publish_venue == "dexie") else None
     splash = SplashAdapter(splash_base_url) if (not dry_run and publish_venue == "splash") else None
     publish_failures = 0
+    _offer_store: SqliteStore | None = None
+    if not dry_run:
+        _offer_store = SqliteStore(_resolve_db_path(program_path, state_db))
+    # ---- Sage coin denomination preflight (non-dry-run only) ----
+    # Before building any real offers via Sage, ensure the wallet has enough
+    # denominated coins of the right size.  Sage cannot do internal coin
+    # selection change on CAT offers if no individual coin is large enough,
+    # so we split proactively by sending the required amount to ourselves
+    # N times, then wait for the new coins to be confirmed on-chain.
+    if not dry_run and sage_certs_present():
+        _base_mojo_mult_pre = int(pricing.get("base_unit_mojo_multiplier", 1000))
+        _offer_mojos_pre = int(size_base_units) * _base_mojo_mult_pre
+        # For buy-side offers we're spending XCH, not the base CAT; Sage handles
+        # XCH coin selection internally so the preflight is a no-op for that case.
+        _preflight_asset = "xch" if side == "buy" else str(market.base_asset)
+        _preflight_rc = _sage_preflight_cat_split(
+            asset_id=_preflight_asset,
+            offer_mojos=_offer_mojos_pre,
+            number_of_coins=repeat,
+        )
+        if _preflight_rc != 0:
+            print(
+                _format_json_output(
+                    {
+                        "market_id": market.market_id,
+                        "error": "coin_preflight_failed",
+                        "detail": "Sage coin denomination preflight failed; cannot proceed with offer build.",
+                    }
+                )
+            )
+            return _preflight_rc
     for index in range(repeat):
-        payload = {
-            "market_id": market.market_id,
-            "base_asset": market.base_asset,
-            "base_symbol": market.base_symbol,
-            "quote_asset": market.quote_asset,
-            "quote_asset_type": market.quote_asset_type,
-            "receive_address": market.receive_address,
-            "size_base_units": int(size_base_units),
-            "pair": str(market.quote_asset).strip().lower(),
-            "reason": "manual_build_and_post",
-            "xch_price_usd": None,
-            "expiry_unit": "minutes",
-            "expiry_value": _TEST_PHASE_OFFER_EXPIRY_MINUTES,
-            "quote_price_quote_per_base": float(quote_price),
-            "base_unit_mojo_multiplier": int(pricing.get("base_unit_mojo_multiplier", 1000)),
-            "quote_unit_mojo_multiplier": int(pricing.get("quote_unit_mojo_multiplier", 1000)),
-            "fee_mojos": 0,
-            "dry_run": bool(dry_run),
-            "key_id": market.signer_key_id,
-            "keyring_yaml_path": keyring_yaml_path,
-            "network": network,
-            "asset_id": market.base_asset,
-        }
+        _base_mojo_mult = int(pricing.get("base_unit_mojo_multiplier", 1000))
+        _xch_mojo_mult = 1_000_000_000_000
+        _quote_is_xch = str(getattr(market, "quote_asset", "") or "").strip().lower() in {"xch", "txch", "1"}
+        _xch_asset_symbol = "txch" if network in ("testnet", "testnet11") else "xch"
+
+        if side == "buy":
+            # Buy side: we offer XCH (or txch) and request the base CAT.
+            # Swap offered/requested assets and compute mojos explicitly.
+            _offer_mojos_buy = int(round(float(size_base_units) * float(quote_price) * _xch_mojo_mult))
+            _request_mojos_buy = int(size_base_units) * _base_mojo_mult
+            payload = {
+                "market_id": market.market_id,
+                "base_asset": market.base_asset,
+                "base_symbol": market.base_symbol,
+                "quote_asset": str(market.quote_asset),
+                "quote_asset_type": market.quote_asset_type,
+                "receive_address": market.receive_address,
+                "size_base_units": int(size_base_units),
+                "side": "buy",
+                "pair": str(market.quote_asset).strip().lower(),
+                "reason": "manual_build_and_post",
+                "xch_price_usd": None,
+                "expiry_unit": "minutes",
+                "expiry_value": _TEST_PHASE_OFFER_EXPIRY_MINUTES,
+                "quote_price_quote_per_base": float(quote_price),
+                "base_unit_mojo_multiplier": _xch_mojo_mult,
+                "quote_unit_mojo_multiplier": _base_mojo_mult,
+                # Explicit mojo overrides — bypass formula in offer_builder_sdk.
+                "offer_mojos_override": _offer_mojos_buy,
+                "request_mojos_override": _request_mojos_buy,
+                "fee_mojos": 0,
+                "dry_run": bool(dry_run),
+                "key_id": market.signer_key_id,
+                "keyring_yaml_path": keyring_yaml_path,
+                "network": network,
+                # asset_id = XCH (what we're offering); quote_asset_id = base CAT (what we want)
+                "asset_id": _xch_asset_symbol,
+                "use_sage_wallet": sage_certs_present(),
+            }
+        else:
+            # Sell side (default): offer base CAT, request XCH.
+            payload = {
+                "market_id": market.market_id,
+                "base_asset": market.base_asset,
+                "base_symbol": market.base_symbol,
+                "quote_asset": market.quote_asset,
+                "quote_asset_type": market.quote_asset_type,
+                "receive_address": market.receive_address,
+                "size_base_units": int(size_base_units),
+                "side": "sell",
+                "pair": str(market.quote_asset).strip().lower(),
+                "reason": "manual_build_and_post",
+                "xch_price_usd": None,
+                "expiry_unit": "minutes",
+                "expiry_value": _TEST_PHASE_OFFER_EXPIRY_MINUTES,
+                "quote_price_quote_per_base": float(quote_price),
+                "base_unit_mojo_multiplier": _base_mojo_mult,
+                "quote_unit_mojo_multiplier": (
+                    _xch_mojo_mult if _quote_is_xch
+                    else int(pricing.get("quote_unit_mojo_multiplier", 1000))
+                ),
+                "fee_mojos": 0,
+                "dry_run": bool(dry_run),
+                "key_id": market.signer_key_id,
+                "keyring_yaml_path": keyring_yaml_path,
+                "network": network,
+                "asset_id": market.base_asset,
+                # Use Sage RPC wallet when no keyring is configured and Sage certs are present.
+                # This applies even during dry run — Sage builds the real offer object; the
+                # manager skips posting it.  Without this, the BLS path would be attempted
+                # and fail when chia_wallet_sdk is not installed.
+                "use_sage_wallet": sage_certs_present(),
+            }
+        if dry_run:
+            # Skip actual offer building for dry runs — Sage (and BLS) both require
+            # real spendable coins.  Just echo back the resolved parameters as a preview.
+            if payload.get("offer_mojos_override") is not None:
+                offer_mojos = int(payload["offer_mojos_override"])
+            else:
+                base_mojo_mult = int(payload.get("base_unit_mojo_multiplier", 1000))
+                offer_mojos = int(size_base_units) * base_mojo_mult
+            if payload.get("request_mojos_override") is not None:
+                request_mojos = int(payload["request_mojos_override"])
+            else:
+                quote_mojo_mult = int(payload.get("quote_unit_mojo_multiplier", 1000))
+                request_mojos = int(
+                    round(float(size_base_units) * float(quote_price) * float(quote_mojo_mult))
+                )
+            preview_item: dict[str, Any] = {
+                "dry_run": True,
+                "pair": payload.get("pair"),
+                "size_base_units": int(size_base_units),
+                "offer_mojos": offer_mojos,
+                "request_mojos": request_mojos,
+                "quote_price_quote_per_base": float(quote_price),
+                "expiry_unit": payload.get("expiry_unit"),
+                "expiry_value": payload.get("expiry_value"),
+                "use_sage_wallet": payload.get("use_sage_wallet"),
+            }
+            # When the debug capture dir is set, actually build the offer and write it
+            # to disk (useful for inspecting generated offer text without broadcasting).
+            if capture_dir_path is not None:
+                try:
+                    offer_text_debug = _build_offer_text_for_request(payload)
+                except Exception as exc:
+                    publish_failures += 1
+                    post_results.append(
+                        {
+                            "venue": publish_venue,
+                            "result": {
+                                "success": False,
+                                "error": f"offer_builder_failed:{exc}",
+                            },
+                        }
+                    )
+                    continue
+                capture_file = capture_dir_path / f"{market.market_id}-dry-run-{index + 1}.offer"
+                capture_file.write_text(offer_text_debug, encoding="utf-8")
+                preview_item["offer_capture_path"] = str(capture_file)
+            built_offers_preview.append(preview_item)
+            continue
         try:
             offer_text = _build_offer_text_for_request(payload)
         except Exception as exc:
@@ -2581,53 +2967,81 @@ def _build_and_post_offer(
                 }
             )
             continue
-        if dry_run:
-            preview_item: dict[str, str] = {
-                "offer_prefix": offer_text[:24],
-                "offer_length": str(len(offer_text)),
-            }
-            if capture_dir_path is not None:
-                capture_file = capture_dir_path / f"{market.market_id}-dry-run-{index + 1}.offer"
-                capture_file.write_text(offer_text, encoding="utf-8")
-                preview_item["offer_capture_path"] = str(capture_file)
-            built_offers_preview.append(preview_item)
-        else:
-            if publish_venue == "dexie":
-                assert dexie is not None
-                verify_error = _verify_offer_text_for_dexie(offer_text)
-                if verify_error:
-                    publish_failures += 1
-                    post_results.append(
-                        {
-                            "venue": "dexie",
-                            "result": {"success": False, "error": verify_error},
-                        }
-                    )
-                    continue
-                result = dexie.post_offer(
-                    offer_text,
-                    drop_only=drop_only,
-                    claim_rewards=claim_rewards,
+        if publish_venue == "dexie":
+            assert dexie is not None
+            # When the offer was built via Sage RPC the wallet itself guarantees
+            # the offer is valid; skip the SDK-based local validation step which
+            # requires chia_wallet_sdk / greenfloor_native to be installed.
+            use_sage = bool(payload.get("use_sage_wallet", False))
+            verify_error = None if use_sage else _verify_offer_text_for_dexie(offer_text)
+            if verify_error:
+                publish_failures += 1
+                post_results.append(
+                    {
+                        "venue": "dexie",
+                        "result": {"success": False, "error": verify_error},
+                    }
                 )
-                success_value = result.get("success")
-                if success_value is False:
-                    publish_failures += 1
-                result_payload = dict(result)
-                offer_id = str(result_payload.get("id", "")).strip()
-                if offer_id:
-                    result_payload["offer_view_url"] = _dexie_offer_view_url(
-                        dexie_base_url=dexie_base_url,
+                continue
+            result = dexie.post_offer(
+                offer_text,
+                drop_only=drop_only,
+                claim_rewards=claim_rewards,
+            )
+            success_value = result.get("success")
+            if success_value is False:
+                publish_failures += 1
+            result_payload = dict(result)
+            offer_id = str(result_payload.get("id", "")).strip()
+            if offer_id:
+                result_payload["offer_view_url"] = _dexie_offer_view_url(
+                    dexie_base_url=dexie_base_url,
+                    offer_id=offer_id,
+                )
+                if success_value is not False and _offer_store is not None:
+                    _offer_store.upsert_offer_state(
                         offer_id=offer_id,
+                        market_id=str(market.market_id),
+                        state=OfferLifecycleState.OPEN.value,
+                        last_seen_status=None,
                     )
-                post_results.append({"venue": "dexie", "result": result_payload})
-            else:
-                assert splash is not None
-                result = splash.post_offer(offer_text)
-                success_value = result.get("success")
-                if success_value is False:
-                    publish_failures += 1
-                post_results.append({"venue": "splash", "result": result})
+                    _offer_store.add_audit_event(
+                        "strategy_offer_execution",
+                        {
+                            "offer_id": offer_id,
+                            "market_id": str(market.market_id),
+                            "venue": publish_venue,
+                        },
+                        market_id=str(market.market_id),
+                    )
+            post_results.append({"venue": "dexie", "result": result_payload})
+        else:
+            assert splash is not None
+            result = splash.post_offer(offer_text)
+            success_value = result.get("success")
+            if success_value is False:
+                publish_failures += 1
+            splash_offer_id = str(result.get("id", "")).strip()
+            if splash_offer_id and success_value is not False and _offer_store is not None:
+                _offer_store.upsert_offer_state(
+                    offer_id=splash_offer_id,
+                    market_id=str(market.market_id),
+                    state=OfferLifecycleState.OPEN.value,
+                    last_seen_status=None,
+                )
+                _offer_store.add_audit_event(
+                    "strategy_offer_execution",
+                    {
+                        "offer_id": splash_offer_id,
+                        "market_id": str(market.market_id),
+                        "venue": publish_venue,
+                    },
+                    market_id=str(market.market_id),
+                )
+            post_results.append({"venue": "splash", "result": result})
 
+    if _offer_store is not None:
+        _offer_store.close()
     publish_attempts = len(post_results)
     print(
         _format_json_output(
@@ -3417,14 +3831,23 @@ def _doctor(
     _warn_if_invalid_int_env("GREENFLOOR_OFFER_CANCEL_BACKOFF_MS", minimum=0)
     _warn_if_invalid_int_env("GREENFLOOR_OFFER_CANCEL_COOLDOWN_SECONDS", minimum=0)
 
-    if not program.cloud_wallet_base_url:
-        warnings.append("cloud_wallet_not_configured:base_url")
-    if not program.cloud_wallet_user_key_id:
-        warnings.append("cloud_wallet_not_configured:user_key_id")
-    if not program.cloud_wallet_private_key_pem_path:
-        warnings.append("cloud_wallet_not_configured:private_key_pem_path")
-    if not program.cloud_wallet_vault_id:
-        warnings.append("cloud_wallet_not_configured:vault_id")
+    # Only warn about partial cloud-wallet config — if none of the fields are
+    # set the user is simply not using cloud wallet (e.g. using Sage instead).
+    _cw_fields = [
+        program.cloud_wallet_base_url,
+        program.cloud_wallet_user_key_id,
+        program.cloud_wallet_private_key_pem_path,
+        program.cloud_wallet_vault_id,
+    ]
+    if any(_cw_fields):  # at least one set → partial config is a problem
+        if not program.cloud_wallet_base_url:
+            warnings.append("cloud_wallet_not_configured:base_url")
+        if not program.cloud_wallet_user_key_id:
+            warnings.append("cloud_wallet_not_configured:user_key_id")
+        if not program.cloud_wallet_private_key_pem_path:
+            warnings.append("cloud_wallet_not_configured:private_key_pem_path")
+        if not program.cloud_wallet_vault_id:
+            warnings.append("cloud_wallet_not_configured:vault_id")
 
     result = {
         "ok": len(problems) == 0,
@@ -3671,7 +4094,25 @@ def _offers_status(
     market_id: str | None,
     limit: int,
     events_limit: int,
+    markets_path: Path | None = None,
+    testnet_markets_path: Path | None = None,
 ) -> int:
+    # Build a lookup of market_id -> {base_symbol, quote_asset} for UI enrichment.
+    market_meta: dict[str, dict[str, str]] = {}
+    _mp = markets_path or _default_markets_config_path()
+    try:
+        _markets = load_markets_config_with_optional_overlay(
+            path=Path(_mp),
+            overlay_path=Path(testnet_markets_path) if testnet_markets_path else None,
+        )
+        for _m in (_markets.markets or []):
+            market_meta[str(_m.market_id)] = {
+                "base_symbol": str(getattr(_m, "base_symbol", "") or ""),
+                "quote_asset": str(getattr(_m, "quote_asset", "") or ""),
+            }
+    except Exception:
+        pass
+
     db_path = _resolve_db_path(program_path, state_db)
     store = SqliteStore(db_path)
     try:
@@ -3690,6 +4131,12 @@ def _offers_status(
         )
     finally:
         store.close()
+    # Enrich each offer row with market metadata for the UI pair column.
+    for row in offers:
+        meta = market_meta.get(str(row.get("market_id", "") or ""), {})
+        row["base_symbol"] = meta.get("base_symbol", "")
+        row["quote_asset"] = meta.get("quote_asset", "")
+
     by_state: dict[str, int] = {}
     for row in offers:
         by_state[row["state"]] = by_state.get(row["state"], 0) + 1
@@ -3971,6 +4418,12 @@ def main() -> None:
     p_build_post.add_argument("--size-base-units", required=True, type=int)
     p_build_post.add_argument("--repeat", default=1, type=int)
     p_build_post.add_argument(
+        "--side",
+        choices=["buy", "sell"],
+        default="sell",
+        help="Offer side: 'sell' offers the base asset for quote, 'buy' offers quote for base",
+    )
+    p_build_post.add_argument(
         "--network", default="mainnet", choices=["mainnet", "testnet", "testnet11"]
     )
     p_build_post.add_argument("--dexie-base-url", default="")
@@ -4130,6 +4583,8 @@ def main() -> None:
             drop_only=not bool(args.allow_take),
             claim_rewards=bool(args.claim_rewards),
             dry_run=bool(args.dry_run),
+            state_db=args.state_db or None,
+            side=getattr(args, "side", "sell") or "sell",
         )
     elif args.command == "doctor":
         code = _doctor(
@@ -4145,6 +4600,8 @@ def main() -> None:
             market_id=args.market_id or None,
             limit=int(args.limit),
             events_limit=int(args.events_limit),
+            markets_path=Path(args.markets_config) if getattr(args, "markets_config", None) else None,
+            testnet_markets_path=Path(args.testnet_markets_config) if getattr(args, "testnet_markets_config", None) else None,
         )
     elif args.command == "offers-reconcile":
         code = _offers_reconcile(

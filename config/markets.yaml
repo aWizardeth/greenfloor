@@ -1,113 +1,154 @@
----
-# CAT metadata now lives in config/cats.yaml.
-
 markets:
-  - id: eco1812022_sell_xch
-    enabled: true
-    mode: sell_only
-    base_asset: "4a168910b533e6bb9ddf82a776f8d6248308abd3d56b6f4423a3e1de88f466e7"
-    base_symbol: "ECO.181.2022"
-    quote_asset: "xch"
-    quote_asset_type: unstable
-    signer_key_id: "key-main-1"
-    receive_address: "xch1hpppalrmxk7x2vzvf5f5c4ylz6l9kwnjkanqtk3qszegrtkm2lvsr6h0df"
-    pricing:
-      reference_source: "coingecko"
-      reference_pair: "xch_usd"
-      side: "sell"
-      min_price_quote_per_base: 0.0031
-      max_price_quote_per_base: 0.0038
-      slippage_bps: 100
-      strategy_target_spread_bps: 140
-      strategy_min_xch_price_usd: 20.0
-      strategy_max_xch_price_usd: 60.0
-      cancel_policy_stable_vs_unstable: true
-    inventory:
-      low_watermark_base_units: 500
-      low_inventory_alert_threshold_base_units: null
-      current_available_base_units: 500
-      bucket_counts:
-        1: 2
-        10: 1
-        100: 0
-    ladders:
-      sell:
-        - size_base_units: 1
-          target_count: 5
-          split_buffer_count: 1
-          combine_when_excess_factor: 2.0
-        - size_base_units: 10
-          target_count: 2
-          split_buffer_count: 1
-          combine_when_excess_factor: 2.0
-        - size_base_units: 100
-          target_count: 1
-          split_buffer_count: 0
-          combine_when_excess_factor: 2.0
-
-  - id: eco1812022_sell_wusdbc
-    enabled: true
-    mode: sell_only
-    base_asset: "4a168910b533e6bb9ddf82a776f8d6248308abd3d56b6f4423a3e1de88f466e7"
-    base_symbol: "ECO.181.2022"
-    quote_asset: "wUSDC.b"
-    quote_asset_type: stable
-    signer_key_id: "key-main-1"
-    receive_address: "xch1hpppalrmxk7x2vzvf5f5c4ylz6l9kwnjkanqtk3qszegrtkm2lvsr6h0df"
-    pricing:
-      side: "sell"
-      fixed_quote_per_base: 7.75
-      slippage_bps: 25
-    inventory:
-      low_watermark_base_units: 500
-      low_inventory_alert_threshold_base_units: null
-      current_available_base_units: 500
-      bucket_counts:
-        1: 10
-        10: 2
-        100: 1
-    ladders:
-      sell:
-        - size_base_units: 1
-          target_count: 5
-          split_buffer_count: 1
-          combine_when_excess_factor: 2.0
-        - size_base_units: 10
-          target_count: 2
-          split_buffer_count: 1
-          combine_when_excess_factor: 2.0
-        - size_base_units: 100
-          target_count: 1
-          split_buffer_count: 0
-          combine_when_excess_factor: 2.0
-
-  - id: byc_two_sided_wusdbc
-    enabled: false
-    mode: two_sided
-    base_asset: "BYC"
-    base_symbol: "BYC"
-    quote_asset: "wUSDC.b"
-    quote_asset_type: stable
-    signer_key_id: "key-main-2"
-    receive_address: "xch1hpppalrmxk7x2vzvf5f5c4ylz6l9kwnjkanqtk3qszegrtkm2lvsr6h0df"
-    pricing:
-      buy_min_quote_per_base: 0.99
-      sell_max_quote_per_base: 1.01
-      slippage_bps: 50
-    inventory:
-      low_watermark_base_units: 200
-      low_inventory_alert_threshold_base_units: 200
-      current_available_base_units: 0
-      bucket_counts:
-        10: 0
-    ladders:
-      buy:
-        - size_base_units: 10
-          target_count: 8
-          split_buffer_count: 1
-          combine_when_excess_factor: 2.0
-      sell:
-        - size_base_units: 10
-          target_count: 8
-          split_buffer_count: 1
-          combine_when_excess_factor: 2.0
+- id: carbon22_sell_xch
+  enabled: false
+  mode: sell_only
+  base_asset: 4a168910b533e6bb9ddf82a776f8d6248308abd3d56b6f4423a3e1de88f466e7
+  base_symbol: CARBON22
+  quote_asset: xch
+  quote_asset_type: unstable
+  signer_key_id: key-main-1
+  receive_address: xch164rups9jzp50xhjrcxh07p03ncmn7m3xxcz0eryhgqt7ppz0lucs2nj07c
+  pricing:
+    reference_source: coingecko
+    reference_pair: xch_usd
+    side: sell
+    min_price_quote_per_base: 0.0031
+    max_price_quote_per_base: 0.0038
+    slippage_bps: 100
+    strategy_target_spread_bps: 140
+    strategy_min_xch_price_usd: 20
+    strategy_max_xch_price_usd: 60
+    cancel_policy_stable_vs_unstable: true
+  inventory:
+    low_watermark_base_units: 500
+    low_inventory_alert_threshold_base_units: null
+    current_available_base_units: 500
+    bucket_counts:
+      '1': 2
+      '10': 1
+      '100': 0
+  ladders:
+    sell:
+    - size_base_units: 1
+      target_count: 5
+      split_buffer_count: 1
+      combine_when_excess_factor: 2
+    - size_base_units: 10
+      target_count: 2
+      split_buffer_count: 1
+      combine_when_excess_factor: 2
+    - size_base_units: 100
+      target_count: 1
+      split_buffer_count: 0
+      combine_when_excess_factor: 2
+- id: carbon22_sell_wusdbc
+  enabled: false
+  mode: sell_only
+  base_asset: 4a168910b533e6bb9ddf82a776f8d6248308abd3d56b6f4423a3e1de88f466e7
+  base_symbol: CARBON22
+  quote_asset: wUSDC.b
+  quote_asset_type: stable
+  signer_key_id: key-main-1
+  receive_address: xch164rups9jzp50xhjrcxh07p03ncmn7m3xxcz0eryhgqt7ppz0lucs2nj07c
+  pricing:
+    side: sell
+    fixed_quote_per_base: 7.75
+    slippage_bps: 25
+  inventory:
+    low_watermark_base_units: 500
+    low_inventory_alert_threshold_base_units: null
+    current_available_base_units: 500
+    bucket_counts:
+      '1': 10
+      '10': 2
+      '100': 1
+  ladders:
+    sell:
+    - size_base_units: 1
+      target_count: 5
+      split_buffer_count: 1
+      combine_when_excess_factor: 2
+    - size_base_units: 10
+      target_count: 2
+      split_buffer_count: 1
+      combine_when_excess_factor: 2
+    - size_base_units: 100
+      target_count: 1
+      split_buffer_count: 0
+      combine_when_excess_factor: 2
+- id: byc_two_sided_wusdbc
+  enabled: false
+  mode: two_sided
+  base_asset: BYC
+  base_symbol: BYC
+  quote_asset: wUSDC.b
+  quote_asset_type: stable
+  signer_key_id: key-main-2
+  receive_address: xch164rups9jzp50xhjrcxh07p03ncmn7m3xxcz0eryhgqt7ppz0lucs2nj07c
+  pricing:
+    buy_min_quote_per_base: 0.99
+    sell_max_quote_per_base: 1.01
+    slippage_bps: 50
+  inventory:
+    low_watermark_base_units: 200
+    low_inventory_alert_threshold_base_units: 200
+    current_available_base_units: 0
+    bucket_counts:
+      '10': 0
+  ladders:
+    buy:
+    - size_base_units: 10
+      target_count: 8
+      split_buffer_count: 1
+      combine_when_excess_factor: 2
+    sell:
+    - size_base_units: 10
+      target_count: 8
+      split_buffer_count: 1
+      combine_when_excess_factor: 2
+- id: byc_xch_two_sided
+  enabled: true
+  mode: two_sided
+  base_asset: ae1536f56760e471ad85ead45f00d680ff9cca73b8cc3407be778f1c0c606eac
+  base_symbol: BYC
+  quote_asset: xch
+  quote_asset_type: unstable
+  signer_key_id: key-main-1
+  receive_address: xch164rups9jzp50xhjrcxh07p03ncmn7m3xxcz0eryhgqt7ppz0lucs2nj07c
+  pricing:
+    reference_source: coingecko
+    reference_pair: xch_usd
+    buy_usd_per_base: 0.96
+    sell_usd_per_base: 1.04
+    slippage_bps: 50
+    cancel_policy_stable_vs_unstable: true
+  inventory:
+    low_watermark_base_units: 5
+    low_inventory_alert_threshold_base_units: 5
+    current_available_base_units: 27
+    bucket_counts:
+      '1': 0
+      '5': 0
+  ladders:
+    buy:
+    - size_base_units: 1
+      target_count: 5
+      split_buffer_count: 1
+      combine_when_excess_factor: 2
+    - size_base_units: 5
+      target_count: 5
+      split_buffer_count: 1
+      combine_when_excess_factor: 2
+    - size_base_units: 10
+      target_count: 5
+      split_buffer_count: 1
+      combine_when_excess_factor: 2
+    sell:
+    - size_base_units: 1
+      target_count: 5
+      split_buffer_count: 1
+      combine_when_excess_factor: 2
+    - size_base_units: 5
+      target_count: 3
+      split_buffer_count: 1
+      combine_when_excess_factor: 2

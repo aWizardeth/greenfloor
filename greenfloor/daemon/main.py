@@ -19,6 +19,7 @@ from concurrent_log_handler import ConcurrentRotatingFileHandler
 from greenfloor.adapters.coinset import CoinsetAdapter, extract_coinset_tx_ids_from_offer_payload
 from greenfloor.adapters.dexie import DexieAdapter
 from greenfloor.adapters.price import PriceAdapter
+from greenfloor.adapters.sage_rpc import sage_certs_present
 from greenfloor.adapters.splash import SplashAdapter
 from greenfloor.adapters.wallet import WalletAdapter
 from greenfloor.config.io import (
@@ -294,6 +295,7 @@ def _strategy_config_from_market(market) -> StrategyConfig:
         target_spread_bps=_to_int(pricing.get("strategy_target_spread_bps")),
         min_xch_price_usd=_to_float(pricing.get("strategy_min_xch_price_usd")),
         max_xch_price_usd=_to_float(pricing.get("strategy_max_xch_price_usd")),
+        targets_by_size=targets_by_size if targets_by_size else None,
     )
 
 
@@ -307,6 +309,7 @@ def _strategy_state_from_bucket_counts(
         tens=int(bucket_counts.get(10, 0)),
         hundreds=int(bucket_counts.get(100, 0)),
         xch_price_usd=xch_price_usd,
+        buckets_by_size={k: v for k, v in bucket_counts.items()} if bucket_counts else None,
     )
 
 
@@ -417,23 +420,42 @@ def _inject_reseed_action_if_no_active_offers(
     ]
 
 
-def _resolve_quote_price_quote_per_base(market) -> float:
+def _resolve_quote_price_quote_per_base(
+    market,
+    *,
+    xch_price_usd: float | None = None,
+) -> float:
     pricing = _market_pricing(market)
     quote_price = pricing.get("fixed_quote_per_base")
-    if quote_price is None:
-        min_q = pricing.get("min_price_quote_per_base")
-        max_q = pricing.get("max_price_quote_per_base")
-        if min_q is not None and max_q is not None:
-            quote_price = (float(min_q) + float(max_q)) / 2.0
-        elif min_q is not None:
-            quote_price = float(min_q)
-        elif max_q is not None:
-            quote_price = float(max_q)
-    if quote_price is None:
-        raise ValueError(
-            "market pricing must define fixed_quote_per_base or min/max_price_quote_per_base"
-        )
-    return float(quote_price)
+    if quote_price is not None:
+        return float(quote_price)
+    min_q = pricing.get("min_price_quote_per_base")
+    max_q = pricing.get("max_price_quote_per_base")
+    if min_q is not None and max_q is not None:
+        return (float(min_q) + float(max_q)) / 2.0
+    if min_q is not None:
+        return float(min_q)
+    if max_q is not None:
+        return float(max_q)
+    # USD-pegged pricing: sell side takes priority (daemon generates sell actions by default).
+    sell_usd = pricing.get("sell_usd_per_base")
+    if sell_usd is not None:
+        if xch_price_usd is None or float(xch_price_usd) <= 0:
+            raise ValueError(
+                "xch_price_usd required for sell_usd_per_base pricing but is unavailable"
+            )
+        return float(sell_usd) / float(xch_price_usd)
+    buy_usd = pricing.get("buy_usd_per_base")
+    if buy_usd is not None:
+        if xch_price_usd is None or float(xch_price_usd) <= 0:
+            raise ValueError(
+                "xch_price_usd required for buy_usd_per_base pricing but is unavailable"
+            )
+        return float(buy_usd) / float(xch_price_usd)
+    raise ValueError(
+        "market pricing must define fixed_quote_per_base, min/max_price_quote_per_base, "
+        "sell_usd_per_base, or buy_usd_per_base"
+    )
 
 
 def _build_offer_for_action(
@@ -443,12 +465,13 @@ def _build_offer_for_action(
     xch_price_usd: float | None,
     network: str,
     keyring_yaml_path: str,
+    use_sage_wallet: bool = False,
 ) -> dict[str, Any]:
     from greenfloor.cli.offer_builder_sdk import build_offer_text
 
     pricing = _market_pricing(market)
     try:
-        quote_price = _resolve_quote_price_quote_per_base(market)
+        quote_price = _resolve_quote_price_quote_per_base(market, xch_price_usd=xch_price_usd)
     except Exception as exc:
         return {
             "status": "skipped",
@@ -479,6 +502,7 @@ def _build_offer_for_action(
         "keyring_yaml_path": keyring_yaml_path,
         "network": network,
         "asset_id": market.base_asset,
+        "use_sage_wallet": use_sage_wallet,
     }
     try:
         offer = build_offer_text(payload)
@@ -663,6 +687,8 @@ def _execute_strategy_actions(
     cooldown_key = f"{publish_venue}:{market.market_id}"
     signer_key = (signer_key_registry or {}).get(market.signer_key_id)
     keyring_yaml_path = str(getattr(signer_key, "keyring_yaml_path", "") or "")
+    # Use Sage RPC wallet when no keyring path is configured and Sage certs are present.
+    use_sage_wallet = sage_certs_present()
     for action in strategy_actions:
         for _ in range(int(action.repeat)):
             if runtime_dry_run:
@@ -682,6 +708,7 @@ def _execute_strategy_actions(
                 xch_price_usd=xch_price_usd,
                 network=app_network,
                 keyring_yaml_path=keyring_yaml_path,
+                use_sage_wallet=use_sage_wallet,
             )
             if built.get("status") != "executed":
                 built_reason = str(built.get("reason", "offer_builder_skipped"))
