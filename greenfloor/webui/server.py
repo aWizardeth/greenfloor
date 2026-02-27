@@ -285,10 +285,20 @@ def _build_sage_client() -> "Any":
     """Build a SageRpcClient from config (or auto-detected cert paths)."""
     from greenfloor.adapters.sage_rpc import resolve_sage_client
     cfg = _load_sage_rpc_cfg()
+    fp_raw = cfg.get("fingerprint")
+    fingerprint: int | None = None
+    if fp_raw is not None:
+        try:
+            fp_int = int(fp_raw)
+            if fp_int > 0:
+                fingerprint = fp_int
+        except (TypeError, ValueError):
+            pass
     return resolve_sage_client(
         port=int(cfg.get("port") or 9257),
         cert_path=str(cfg.get("cert_path") or "") or None,
         key_path=str(cfg.get("key_path") or "") or None,
+        fingerprint=fingerprint,
     )
 
 

@@ -86,6 +86,11 @@ sage_rpc:
   # Sage default port is 9257. Enable the RPC server in Sage Settings -> RPC.
   enabled: true
   port: 9257
+  # Lock the daemon to a specific Sage wallet fingerprint.
+  # When set, every Sage RPC session calls login(fingerprint) first so
+  # switching wallets in the Sage UI does not affect the daemon.
+  # Set to 0 or omit to use whichever wallet is currently active in Sage.
+  fingerprint: 0
   # Leave blank to auto-detect from the OS Sage data directory.
   # Auto-detected paths (per OS):
   #   Windows: %APPDATA%\com.rigidnetwork.sage\ssl\wallet.crt / .key

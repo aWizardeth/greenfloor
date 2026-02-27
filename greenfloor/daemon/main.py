@@ -19,7 +19,7 @@ from concurrent_log_handler import ConcurrentRotatingFileHandler
 from greenfloor.adapters.coinset import CoinsetAdapter, extract_coinset_tx_ids_from_offer_payload
 from greenfloor.adapters.dexie import DexieAdapter
 from greenfloor.adapters.price import PriceAdapter
-from greenfloor.adapters.sage_rpc import sage_certs_present
+from greenfloor.adapters.sage_rpc import sage_certs_present, configure_sage_fingerprint
 from greenfloor.adapters.splash import SplashAdapter
 from greenfloor.adapters.wallet import WalletAdapter
 from greenfloor.config.io import (
@@ -1514,6 +1514,7 @@ def run_once(
 ) -> int:
     if program is None:
         program = load_program_config(program_path)
+    configure_sage_fingerprint(program.sage_rpc.fingerprint)
     markets = load_markets_config_with_optional_overlay(
         path=markets_path,
         overlay_path=testnet_markets_path,
@@ -1619,6 +1620,7 @@ def _run_loop(
     state_dir: Path,
 ) -> int:
     current_program = load_program_config(program_path)
+    configure_sage_fingerprint(current_program.sage_rpc.fingerprint)
     _initialize_daemon_file_logging(
         current_program.home_dir, log_level=getattr(current_program, "app_log_level", "INFO")
     )
