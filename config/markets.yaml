@@ -107,7 +107,7 @@ markets:
       split_buffer_count: 1
       combine_when_excess_factor: 2
 - id: byc_xch_two_sided
-  enabled: true
+  enabled: false
   mode: two_sided
   base_asset: ae1536f56760e471ad85ead45f00d680ff9cca73b8cc3407be778f1c0c606eac
   base_symbol: BYC

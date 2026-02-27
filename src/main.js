@@ -403,6 +403,103 @@ pages.dashboard = async function (content) {
     content.appendChild(mkCard)
   }
 
+  // ── Market Loop ───────────────────────────────────────────────────────
+  const loopRes = await api('/api/market-loop/status')
+  const loop = loopRes || {}
+  const loopCard = el('div', { class: 'card' })
+  loopCard.style.borderColor = loop.running
+    ? 'rgba(56,189,132,.4)'
+    : loop.can_start
+      ? 'rgba(99,102,241,.3)'
+      : 'rgba(120,120,120,.2)'
+
+  const loopHdr = el('div', { style: 'display:flex;align-items:center;gap:10px;margin-bottom:14px' })
+  loopHdr.appendChild(el('div', { class: 'card-title', style: 'margin:0' }, 'Market Loop'))
+  loopHdr.appendChild(badge(
+    loop.running ? '● running' : '○ stopped',
+    loop.running ? 'green' : 'muted',
+  ))
+  if (!loop.sage_connected) loopHdr.appendChild(badge('Sage offline', 'yellow'))
+  if (loop.enabled_markets === 0) loopHdr.appendChild(badge('no enabled markets', 'muted'))
+  loopCard.appendChild(loopHdr)
+
+  const loopDesc = el('p', { style: 'margin:0 0 12px;color:var(--muted);font-size:13px' })
+  loopDesc.textContent =
+    'When running, the loop evaluates ladder strategy, posts offers via Sage RPC, ' +
+    'and cancels/rotates offers each cycle — exactly what the daemon does.'
+  loopCard.appendChild(loopDesc)
+
+  const loopGrid = el('div', { class: 'grid-3', style: 'margin-bottom:14px' })
+  loopGrid.appendChild(makeStat('Cycles run', String(loop.cycle_count ?? 0)))
+  loopGrid.appendChild(makeStat('Errors', String(loop.error_count ?? 0), loop.error_count > 0 ? 'var(--red)' : undefined))
+  loopGrid.appendChild(makeStat('Last cycle',
+    loop.last_cycle_at ? new Date(loop.last_cycle_at).toLocaleTimeString() : '—'))
+  loopCard.appendChild(loopGrid)
+
+  // Controls row
+  const loopBtns = el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px' })
+
+  if (!loop.running) {
+    const startBtn = el('button', {
+      class: 'btn',
+      disabled: !loop.can_start,
+      onclick: async () => {
+        startBtn.disabled = true; startBtn.textContent = 'Starting…'
+        const r = await api('/api/market-loop/start', { method: 'POST' })
+        if (r.ok) pages.dashboard(content)
+        else { alert('Cannot start loop: ' + (r.error || JSON.stringify(r))); pages.dashboard(content) }
+      },
+    }, '▶ Start Loop')
+    loopBtns.appendChild(startBtn)
+  } else {
+    const stopBtn = el('button', {
+      class: 'btn btn-secondary',
+      onclick: async () => {
+        stopBtn.disabled = true; stopBtn.textContent = 'Stopping…'
+        await api('/api/market-loop/stop', { method: 'POST' })
+        pages.dashboard(content)
+      },
+    }, '⏹ Stop Loop')
+    loopBtns.appendChild(stopBtn)
+  }
+
+  const trigBtn = el('button', {
+    class: 'btn btn-secondary',
+    disabled: !loop.can_start,
+    onclick: async () => {
+      trigBtn.disabled = true; trigBtn.textContent = 'Running…'
+      const r = await api('/api/market-loop/trigger', { method: 'POST' })
+      trigBtn.disabled = false; trigBtn.textContent = '⚡ Run Once'
+      if (r.ok) {
+        const code = r.result?.exit_code
+        trigBtn.textContent = code === 0 ? '✓ Done' : `✗ Error (${code})`
+        setTimeout(() => { trigBtn.textContent = '⚡ Run Once' }, 3000)
+        pages.dashboard(content)
+      } else {
+        alert('Trigger failed: ' + (r.error || JSON.stringify(r)))
+      }
+    },
+  }, '⚡ Run Once')
+  loopBtns.appendChild(trigBtn)
+  loopCard.appendChild(loopBtns)
+
+  // Recent loop events log
+  const events = loop.recent_events || []
+  if (events.length) {
+    const evLog = el('div', {
+      style: 'background:var(--surface-alt,#151515);border-radius:6px;padding:8px 12px;max-height:140px;overflow-y:auto;font-family:monospace;font-size:11px',
+    })
+    for (const ev of events.slice().reverse()) {
+      const line = el('div', { style: `color:${ev.type === 'cycle_error' ? 'var(--red)' : ev.type === 'cycle_done' ? 'var(--green)' : 'var(--muted)'}` })
+      const ts = ev.at ? new Date(ev.at).toLocaleTimeString() : ''
+      line.textContent = `${ts}  ${ev.message}`
+      evLog.appendChild(line)
+    }
+    loopCard.appendChild(evLog)
+  }
+
+  content.appendChild(loopCard)
+
   // ── Recent Offers ─────────────────────────────────────────────────────
   const allOffers = offersRes.parsed?.offers || offersRes.parsed?.results || []
   if (allOffers.length) {
