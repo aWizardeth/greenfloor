@@ -6,6 +6,11 @@ function el(tag, attrs = {}, ...children) {
   for (const [k, v] of Object.entries(attrs)) {
     if (k === 'class') e.className = v
     else if (k.startsWith('on')) e.addEventListener(k.slice(2), v)
+    else if (k === 'disabled' || k === 'checked' || k === 'selected' || k === 'open') {
+      // Boolean DOM properties: set as property, not attribute.
+      // setAttribute('disabled', false) still adds the attribute and disables the element.
+      e[k] = Boolean(v)
+    }
     else e.setAttribute(k, v)
   }
   for (const c of children) {
@@ -145,6 +150,94 @@ let _pendingBuildMarket = null
 // Single timer ID for the market-loop status poll — cleared on every re-render
 // so old timers from previous dashboard renders never accumulate.
 let _loopPollTimerId = null
+
+// Patch all loop-card DOM elements in-place from a fresh /api/market-loop/status
+// response. Never triggers a full dashboard re-render.
+async function _patchLoopCard() {
+  const card = document.querySelector('[data-loop-card]')
+  if (!card) return
+  const fresh = await api('/api/market-loop/status').catch(() => null)
+  if (!fresh) return
+
+  // Border color
+  card.style.borderColor = fresh.running
+    ? 'rgba(56,189,132,.4)'
+    : fresh.can_start
+      ? 'rgba(99,102,241,.3)'
+      : 'rgba(120,120,120,.2)'
+
+  // Header badges (keep title span, replace everything after it)
+  const hdr = card.querySelector('[data-loop-hdr]')
+  if (hdr) {
+    while (hdr.children.length > 1) hdr.removeChild(hdr.lastChild)
+    hdr.appendChild(badge(fresh.running ? '● running' : '○ stopped', fresh.running ? 'green' : 'muted'))
+    if (!fresh.sage_connected) hdr.appendChild(badge('Sage offline', 'yellow'))
+    if (fresh.enabled_markets === 0) hdr.appendChild(badge('no enabled markets', 'muted'))
+  }
+
+  // Start / Stop button swap
+  const ss = card.querySelector('[data-loop-startstop]')
+  if (ss) {
+    ss.innerHTML = ''
+    if (!fresh.running) {
+      const startBtn = el('button', {
+        class: 'btn',
+        onclick: async () => {
+          startBtn.disabled = true; startBtn.textContent = 'Starting\u2026'
+          const liveStatus = await api('/api/market-loop/status').catch(() => null)
+          if (liveStatus && !liveStatus.sage_connected) {
+            alert('Cannot start: Sage wallet certs not found. Enable the RPC server in Sage Settings \u2192 RPC.')
+            startBtn.disabled = false; startBtn.textContent = '\u25b6 Start Loop'
+            return
+          }
+          if (liveStatus && liveStatus.enabled_markets === 0) {
+            alert('Cannot start: no enabled markets. Enable at least one market first.')
+            startBtn.disabled = false; startBtn.textContent = '\u25b6 Start Loop'
+            return
+          }
+          const r = await api('/api/market-loop/start', { method: 'POST' })
+          if (!r.ok) alert('Cannot start loop: ' + (r.error || JSON.stringify(r)))
+          await _patchLoopCard()
+        },
+      }, '\u25b6 Start Loop')
+      ss.appendChild(startBtn)
+    } else {
+      const stopBtn = el('button', {
+        class: 'btn btn-secondary',
+        onclick: async () => {
+          stopBtn.disabled = true; stopBtn.textContent = 'Stopping\u2026'
+          await api('/api/market-loop/stop', { method: 'POST' })
+          await _patchLoopCard()
+        },
+      }, '\u23f9 Stop Loop')
+      ss.appendChild(stopBtn)
+    }
+  }
+
+  // Stats
+  const cycleEl = card.querySelector('[data-loop-stat-cycles] .stat-value')
+  const errEl   = card.querySelector('[data-loop-stat-errors] .stat-value')
+  const lastEl  = card.querySelector('[data-loop-stat-last] .stat-value')
+  if (cycleEl) cycleEl.textContent = String(fresh.cycle_count ?? 0)
+  if (errEl) {
+    errEl.textContent = String(fresh.error_count ?? 0)
+    errEl.style.color = fresh.error_count > 0 ? 'var(--red)' : ''
+  }
+  if (lastEl) lastEl.textContent = fresh.last_cycle_at ? new Date(fresh.last_cycle_at).toLocaleTimeString() : '\u2014'
+
+  // Events log
+  const evLogEl = card.querySelector('[data-loop-events]')
+  if (evLogEl && fresh.recent_events?.length) {
+    evLogEl.style.display = ''
+    evLogEl.innerHTML = ''
+    for (const ev of fresh.recent_events.slice().reverse()) {
+      const line = el('div', { style: `color:${ev.type === 'cycle_error' ? 'var(--red)' : ev.type === 'cycle_done' ? 'var(--green)' : 'var(--muted)'}` })
+      const ts = ev.at ? new Date(ev.at).toLocaleTimeString() : ''
+      line.textContent = `${ts}  ${ev.message}`
+      evLogEl.appendChild(line)
+    }
+  }
+}
 
 // ── Dashboard ──────────────────────────────────────────────────────────────
 pages.dashboard = async function (content) {
@@ -416,7 +509,7 @@ pages.dashboard = async function (content) {
       ? 'rgba(99,102,241,.3)'
       : 'rgba(120,120,120,.2)'
 
-  const loopHdr = el('div', { style: 'display:flex;align-items:center;gap:10px;margin-bottom:14px' })
+  const loopHdr = el('div', { 'data-loop-hdr': '1', style: 'display:flex;align-items:center;gap:10px;margin-bottom:14px' })
   loopHdr.appendChild(el('div', { class: 'card-title', style: 'margin:0' }, 'Market Loop'))
   loopHdr.appendChild(badge(
     loop.running ? '● running' : '○ stopped',
@@ -433,21 +526,29 @@ pages.dashboard = async function (content) {
   loopCard.appendChild(loopDesc)
 
   const loopGrid = el('div', { class: 'grid-3', style: 'margin-bottom:14px' })
-  loopGrid.appendChild(makeStat('Cycles run', String(loop.cycle_count ?? 0)))
-  loopGrid.appendChild(makeStat('Errors', String(loop.error_count ?? 0), loop.error_count > 0 ? 'var(--red)' : undefined))
-  loopGrid.appendChild(makeStat('Last cycle',
-    loop.last_cycle_at ? new Date(loop.last_cycle_at).toLocaleTimeString() : '—'))
+  const _cycleStat = makeStat('Cycles run', String(loop.cycle_count ?? 0))
+  _cycleStat.dataset.loopStatCycles = '1'
+  loopGrid.appendChild(_cycleStat)
+  const _errStat = makeStat('Errors', String(loop.error_count ?? 0), loop.error_count > 0 ? 'var(--red)' : undefined)
+  _errStat.dataset.loopStatErrors = '1'
+  loopGrid.appendChild(_errStat)
+  const _lastStat = makeStat('Last cycle',
+    loop.last_cycle_at ? new Date(loop.last_cycle_at).toLocaleTimeString() : '—')
+  _lastStat.dataset.loopStatLast = '1'
+  loopGrid.appendChild(_lastStat)
   loopCard.appendChild(loopGrid)
 
   // Controls row
   const loopBtns = el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px' })
 
+  // [data-loop-startstop] is a display:contents wrapper so _patchLoopCard can
+  // swap Start ↔ Stop without touching the rest of the buttons row.
+  const _ssWrap = el('div', { 'data-loop-startstop': '1', style: 'display:contents' })
   if (!loop.running) {
     const startBtn = el('button', {
       class: 'btn',
       onclick: async () => {
         startBtn.disabled = true; startBtn.textContent = 'Starting…'
-        // Re-fetch status live so we reflect any market toggle that happened after page load
         const liveStatus = await api('/api/market-loop/status').catch(() => null)
         if (liveStatus && !liveStatus.sage_connected) {
           alert('Cannot start: Sage wallet certs not found. Enable the RPC server in Sage Settings → RPC.')
@@ -460,22 +561,23 @@ pages.dashboard = async function (content) {
           return
         }
         const r = await api('/api/market-loop/start', { method: 'POST' })
-        if (r.ok) pages.dashboard(content)
-        else { alert('Cannot start loop: ' + (r.error || JSON.stringify(r))); pages.dashboard(content) }
+        if (!r.ok) alert('Cannot start loop: ' + (r.error || JSON.stringify(r)))
+        await _patchLoopCard()
       },
     }, '▶ Start Loop')
-    loopBtns.appendChild(startBtn)
+    _ssWrap.appendChild(startBtn)
   } else {
     const stopBtn = el('button', {
       class: 'btn btn-secondary',
       onclick: async () => {
         stopBtn.disabled = true; stopBtn.textContent = 'Stopping…'
         await api('/api/market-loop/stop', { method: 'POST' })
-        pages.dashboard(content)
+        await _patchLoopCard()
       },
     }, '⏹ Stop Loop')
-    loopBtns.appendChild(stopBtn)
+    _ssWrap.appendChild(stopBtn)
   }
+  loopBtns.appendChild(_ssWrap)
 
   const trigBtn = el('button', {
     class: 'btn btn-secondary',
@@ -487,7 +589,7 @@ pages.dashboard = async function (content) {
         const code = r.result?.exit_code
         trigBtn.textContent = code === 0 ? '✓ Done' : `✗ Error (${code})`
         setTimeout(() => { trigBtn.textContent = '⚡ Run Once' }, 3000)
-        pages.dashboard(content)
+        _patchLoopCard()
       } else {
         alert('Trigger failed: ' + (r.error || JSON.stringify(r)))
       }
@@ -498,18 +600,18 @@ pages.dashboard = async function (content) {
 
   // Recent loop events log
   const events = loop.recent_events || []
-  if (events.length) {
-    const evLog = el('div', {
-      style: 'background:var(--surface-alt,#151515);border-radius:6px;padding:8px 12px;max-height:140px;overflow-y:auto;font-family:monospace;font-size:11px',
-    })
-    for (const ev of events.slice().reverse()) {
-      const line = el('div', { style: `color:${ev.type === 'cycle_error' ? 'var(--red)' : ev.type === 'cycle_done' ? 'var(--green)' : 'var(--muted)'}` })
-      const ts = ev.at ? new Date(ev.at).toLocaleTimeString() : ''
-      line.textContent = `${ts}  ${ev.message}`
-      evLog.appendChild(line)
-    }
-    loopCard.appendChild(evLog)
+  const evLog = el('div', {
+    style: 'background:var(--surface-alt,#151515);border-radius:6px;padding:8px 12px;max-height:140px;overflow-y:auto;font-family:monospace;font-size:11px',
+    'data-loop-events': '1',
+  })
+  if (!events.length) evLog.style.display = 'none'
+  for (const ev of events.slice().reverse()) {
+    const line = el('div', { style: `color:${ev.type === 'cycle_error' ? 'var(--red)' : ev.type === 'cycle_done' ? 'var(--green)' : 'var(--muted)'}` })
+    const ts = ev.at ? new Date(ev.at).toLocaleTimeString() : ''
+    line.textContent = `${ts}  ${ev.message}`
+    evLog.appendChild(line)
   }
+  loopCard.appendChild(evLog)
 
   // Live-poll loop status every 5 s while this card is in the DOM.
   // Catches: market enabled after page load, loop stopped/started externally.
@@ -519,14 +621,7 @@ pages.dashboard = async function (content) {
     if (!document.querySelector('[data-loop-card]')) {
       clearInterval(_loopPollTimerId); _loopPollTimerId = null; return
     }
-    const fresh = await api('/api/market-loop/status').catch(() => null)
-    if (!fresh) return
-    const stateChanged = fresh.running !== loop.running || fresh.can_start !== loop.can_start
-      || fresh.cycle_count !== loop.cycle_count || fresh.error_count !== loop.error_count
-    if (stateChanged) {
-      clearInterval(_loopPollTimerId); _loopPollTimerId = null
-      pages.dashboard(content)
-    }
+    await _patchLoopCard()
   }, 5000)
 
   content.appendChild(loopCard)
@@ -616,13 +711,44 @@ pages.offers = async function (content) {
   content.innerHTML = ''
   const topbar = document.getElementById('topbar-actions')
   topbar.innerHTML = ''
-  const btnRefresh = el('button', { class: 'btn btn-secondary', onclick: () => loadOffers() }, '↻ Refresh')
+  const btnRefresh = el('button', {
+    class: 'btn btn-secondary',
+    onclick: () => { loadOffers(); loadSageOffers() },
+  }, '↻ Refresh')
   const btnReconcile = el('button', { class: 'btn btn-primary', onclick: () => runReconcile() }, '⚡ Reconcile')
-  topbar.appendChild(el('div', { class: 'btn-group' }, btnRefresh, btnReconcile))
+  const btnCancelAll = el('button', {
+    class: 'btn',
+    style: 'background:var(--red,#c0392b);border-color:var(--red,#c0392b)',
+    onclick: async () => {
+      if (!confirm('Cancel ALL active offers in your Sage wallet?')) return
+      btnCancelAll.disabled = true; btnCancelAll.textContent = 'Cancelling…'
+      try {
+        const r = await api('/api/sage-rpc/offers/cancel-all', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        })
+        btnCancelAll.disabled = false; btnCancelAll.textContent = '✕ Cancel All'
+        if (r.ok) {
+          const failDetails = (r.results || []).filter(x => !x.ok).map(x => `${x.offer_id}: ${x.error}`).join('\n')
+          alert(`Cancelled ${r.cancelled} of ${r.total} offers.${r.failed ? ` ${r.failed} failed.` : ''}${failDetails ? '\n\nErrors:\n' + failDetails : ''}`)
+          loadSageOffers()
+        } else {
+          alert('Cancel all failed: ' + (r.error || r.body || JSON.stringify(r)))
+        }
+      } catch (err) {
+        btnCancelAll.disabled = false; btnCancelAll.textContent = '✕ Cancel All'
+        alert('Cancel all request failed: ' + String(err))
+      }
+    },
+  }, '✕ Cancel All')
+  topbar.appendChild(el('div', { class: 'btn-group' }, btnRefresh, btnReconcile, btnCancelAll))
 
+  const sageCard = el('div', { class: 'card' })
   const statusCard = el('div', { class: 'card' })
   const reconCard = el('div', { class: 'card' })
   reconCard.style.display = 'none'
+  content.appendChild(sageCard)
   content.appendChild(statusCard)
   content.appendChild(reconCard)
 
@@ -691,6 +817,106 @@ pages.offers = async function (content) {
     statusCard.appendChild(wrap)
   }
 
+  async function loadSageOffers() {
+    sageCard.innerHTML =
+      '<div class="card-title">Sage Wallet Offers</div><div class="loading-row"><div class="spinner"></div> Loading…</div>'
+    const res = await api('/api/sage-rpc/offers?limit=200')
+    sageCard.innerHTML = '<div class="card-title">Sage Wallet Offers</div>'
+    if (!res.ok) {
+      sageCard.appendChild(el('div', { class: 'empty text-muted' },
+        res.error || 'Could not reach Sage wallet (is it running?)'))
+      return
+    }
+    const offers = res.offers || []
+    if (offers.length) console.log('[GreenFloor] Sage offers sample (first record):', JSON.stringify(offers[0], null, 2))
+    if (!offers.length) {
+      sageCard.appendChild(el('div', { class: 'empty' }, 'No active offers in Sage wallet.'))
+      return
+    }
+    const active = offers.filter(o => !['completed', 'failed', 'expired'].includes(String(o.status || '').toLowerCase()))
+    const countGrid = el('div', { class: 'grid-3 mb-16' })
+    ;[['Total', offers.length], ['Active', active.length], ['Completed', offers.length - active.length]].forEach(([l, v]) => {
+      const s = el('div', { class: 'stat' }); s.appendChild(el('div', { class: 'stat-label' }, l))
+      const sv = el('div', { class: 'stat-value' }); sv.textContent = v; s.appendChild(sv)
+      countGrid.appendChild(s)
+    })
+    sageCard.appendChild(countGrid)
+
+    const wrap = el('div', { class: 'tbl-wrap' })
+    const tbl = el('table')
+    tbl.appendChild(el('thead', {}, el('tr', {},
+      ...['Offer ID', 'Status', 'Offered', 'Requested', ''].map(h => { const th = el('th'); th.textContent = h; return th })
+    )))
+    const tbody = el('tbody')
+    for (const o of offers) {
+      const status = String(o.status || 'unknown').toLowerCase()
+      const isActive = !['completed', 'failed', 'expired'].includes(status)
+      const stateColor = status === 'active' || status === 'pending' ? 'green' : status === 'completed' ? 'blue' : 'muted'
+      const row = el('tr')
+      function td2(child) {
+        const t = el('td')
+        if (typeof child === 'string') t.textContent = child
+        else if (child) t.appendChild(child)
+        return t
+      }
+      const idEl = el('span', { style: 'font-family:var(--font-mono);font-size:10px' })
+      // Sage may return offer_id, trade_id, or id — check all three
+      const rawId = o.offer_id || o.trade_id || o.id || ''
+      idEl.textContent = String(rawId || '—').slice(0, 20) + (String(rawId).length > 20 ? '…' : '')
+      idEl.title = String(rawId)
+      row.appendChild(td2(idEl))
+      row.appendChild(el('td', {}, badge(status, stateColor)))
+      // Offered / requested asset summaries
+      const ofAssets = (o.offered_assets || []).map(a => {
+        const id = a.asset_id === null ? 'XCH' : String(a.asset_id || '').slice(0, 8) + '…'
+        const amt = a.amount?.mojos !== undefined ? a.amount.mojos : (a.amount || 0)
+        return `${id} (${amt})`
+      }).join(', ') || '—'
+      const reqAssets = (o.requested_assets || []).map(a => {
+        const id = a.asset_id === null ? 'XCH' : String(a.asset_id || '').slice(0, 8) + '…'
+        const amt = a.amount?.mojos !== undefined ? a.amount.mojos : (a.amount || 0)
+        return `${id} (${amt})`
+      }).join(', ') || '—'
+      row.appendChild(td2(ofAssets))
+      row.appendChild(td2(reqAssets))
+      // Cancel button cell
+      const actionTd = el('td')
+      if (isActive && rawId) {
+        const cancelBtn = el('button', {
+          class: 'btn btn-secondary',
+          style: 'font-size:11px;padding:2px 8px;color:var(--red)',
+          onclick: async () => {
+            cancelBtn.disabled = true; cancelBtn.textContent = '…'
+            try {
+              const r = await api('/api/sage-rpc/offers/cancel', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ offer_id: rawId }),
+              })
+              if (r.ok) {
+                row.style.opacity = '0.4'
+                cancelBtn.textContent = '✓'
+              } else {
+                cancelBtn.disabled = false; cancelBtn.textContent = '✕ Cancel'
+                const detail = r.error || r.body || JSON.stringify(r)
+                alert(`Cancel failed (${r.endpoint || 'cancel_offer'}):\n${detail}`)
+              }
+            } catch (err) {
+              cancelBtn.disabled = false; cancelBtn.textContent = '✕ Cancel'
+              alert('Cancel request failed: ' + String(err))
+            }
+          },
+        }, '✕ Cancel')
+        actionTd.appendChild(cancelBtn)
+      }
+      row.appendChild(actionTd)
+      tbody.appendChild(row)
+    }
+    tbl.appendChild(tbody)
+    wrap.appendChild(tbl)
+    sageCard.appendChild(wrap)
+  }
+
   async function runReconcile() {
     btnReconcile.disabled = true
     reconCard.style.display = ''
@@ -709,6 +935,7 @@ pages.offers = async function (content) {
   }
 
   loadOffers()
+  loadSageOffers()
 }
 
 // ── Coins ──────────────────────────────────────────────────────────────────

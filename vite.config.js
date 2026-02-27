@@ -11,6 +11,20 @@ export default defineConfig({
         changeOrigin: true,
       },
     },
+    watch: {
+      // Prevent Vite reloading when Python writes __pycache__, config yaml,
+      // or the SQLite state DB during daemon/market-loop cycles.
+      ignored: [
+        '**/__pycache__/**',
+        '**/*.pyc',
+        '**/config/*.yaml',
+        '**/.greenfloor/**',
+        '**/greenfloor.egg-info/**',
+        '**/*.sqlite',
+        '**/*.log',
+        '**/*.err',
+      ],
+    },
   },
   build: {
     outDir: 'dist',

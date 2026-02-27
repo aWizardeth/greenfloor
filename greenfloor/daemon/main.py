@@ -1216,6 +1216,7 @@ def _process_single_market(
 
     sell_ladder = market.ladders.get("sell", [])
     ladder_sizes = [e.size_base_units for e in sell_ladder]
+    # Coin counts are used only for coin-ops (split/combine) planning.
     wallet_coins = wallet.list_asset_coins_base_units(
         asset_id=market.base_asset,
         key_id=market.signer_key_id,
@@ -1223,7 +1224,7 @@ def _process_single_market(
         network=program.app_network,
     )
     if wallet_coins:
-        bucket_counts = compute_bucket_counts_from_coins(
+        coin_bucket_counts = compute_bucket_counts_from_coins(
             coin_amounts_base_units=wallet_coins,
             ladder_sizes=ladder_sizes,
         )
@@ -1232,27 +1233,34 @@ def _process_single_market(
             {
                 "market_id": market.market_id,
                 "source": "wallet_adapter",
-                "bucket_counts": bucket_counts,
+                "bucket_counts": coin_bucket_counts,
                 "coin_count": len(wallet_coins),
             },
             market_id=market.market_id,
         )
     else:
-        bucket_counts = dict(market.inventory.bucket_counts)
+        coin_bucket_counts = dict(market.inventory.bucket_counts)
         store.add_audit_event(
             "inventory_bucket_scan",
             {
                 "market_id": market.market_id,
                 "source": "config_seed_or_no_asset_scan",
                 "asset_id": market.base_asset,
-                "bucket_counts": bucket_counts,
+                "bucket_counts": coin_bucket_counts,
             },
             market_id=market.market_id,
         )
+    # Strategy evaluation uses active sell offer counts from the store so the
+    # loop does not re-post offers already live on the venue.  This mirrors the
+    # buy-side approach (count_open_offer_slots_by_size) exactly.
+    sell_slot_counts = store.count_open_offer_slots_by_size(
+        market_id=market.market_id, direction="sell"
+    )
+    strategy_bucket_counts = {size: sell_slot_counts.get(size, 0) for size in ladder_sizes}
     strategy_config = _strategy_config_from_market(market)
     strategy_actions = evaluate_market(
         state=_strategy_state_from_bucket_counts(
-            bucket_counts,
+            strategy_bucket_counts,
             xch_price_usd=xch_price_usd,
         ),
         config=strategy_config,
@@ -1261,12 +1269,12 @@ def _process_single_market(
     )
     _daemon_logger.debug(
         (
-            "strategy_evaluated market_id=%s pair=%s bucket_counts=%s "
+            "strategy_evaluated market_id=%s pair=%s sell_slot_counts=%s "
             "xch_price_usd=%s action_count=%s"
         ),
         market.market_id,
         strategy_config.pair,
-        bucket_counts,
+        strategy_bucket_counts,
         xch_price_usd,
         len(strategy_actions),
     )
@@ -1363,7 +1371,7 @@ def _process_single_market(
             target_count=e.target_count,
             split_buffer_count=e.split_buffer_count,
             combine_when_excess_factor=e.combine_when_excess_factor,
-            current_count=int(bucket_counts.get(e.size_base_units, 0)),
+            current_count=int(coin_bucket_counts.get(e.size_base_units, 0)),
         )
         for e in sell_ladder
     ]
